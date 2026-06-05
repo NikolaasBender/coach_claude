@@ -1,0 +1,5 @@
+# Run strength workout generator at 5:00am, Monday and Friday.
+# Container TZ is set via the TZ env var (see docker-compose.yml).
+# Output goes to the container log via /proc/1/fd/1.
+0 5 * * 1 cd /app && /usr/local/bin/python -m src.main monday >> /proc/1/fd/1 2>&1
+0 5 * * 5 cd /app && /usr/local/bin/python -m src.main friday >> /proc/1/fd/1 2>&1

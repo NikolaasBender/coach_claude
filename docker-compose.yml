@@ -1,0 +1,14 @@
+services:
+  coach:
+    build: .
+    container_name: coach_claude
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Ensure TZ reaches the entrypoint even if commented out in .env.
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      # Persistent workout history across restarts.
+      - ./data:/data
+      # Mount .env into the workdir so cron jobs can load it via python-dotenv.
+      - ./.env:/app/.env:ro
