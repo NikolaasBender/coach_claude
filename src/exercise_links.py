@@ -37,7 +37,13 @@ _QUERIES = {
     "lateral lunge": "lateral lunge exercise form",
     "reverse lunge": "reverse lunge form tutorial",
     "glute bridge": "glute bridge form technique",
+    "glute bridge (bodyweight, paused)": "glute bridge form technique",
     "single-leg glute bridge": "single leg glute bridge exercise",
+    "weighted glute bridge (barbell/kb on hips, floor)": "barbell glute bridge floor form",
+    "weighted glute bridge": "barbell glute bridge floor form",
+    "trap-bar-style kb deadlift": "kettlebell deadlift form tutorial",
+    "goblet squat": "goblet squat form",
+    "single-leg press (bosu) / skater squat": "skater squat form tutorial",
 
     # Upper body pull
     "chin-up (controlled, neutral or supinated)": "chin up proper form tutorial",
@@ -58,8 +64,21 @@ _QUERIES = {
     "bosu single-leg balance reach": "BOSU single leg balance exercise",
     "dead bug": "dead bug exercise core tutorial",
     "plank": "plank exercise proper form",
+    "rkc plank": "RKC plank exercise form",
     "side plank": "side plank exercise form",
     "ab wheel rollout": "ab wheel rollout technique",
+    # Lower-core emphasis
+    "lying leg raise": "lying leg raise lower ab exercise",
+    "leg raise": "leg raise lower ab exercise",
+    "hanging knee raise": "hanging knee raise form",
+    "hanging leg raise": "hanging leg raise form",
+    "reverse crunch": "reverse crunch lower ab exercise",
+    "stability-ball knee tuck": "stability ball knee tuck exercise",
+    "heel-tap / toe-touch": "lying heel tap toe touch ab exercise",
+    "farmer carry": "farmer carry exercise form",
+    "neutral-grip db floor press": "dumbbell floor press form",
+    "half-kneeling kb overhead press (light)": "half kneeling kettlebell press form",
+    "chest-supported db row (on ball)": "chest supported dumbbell row form",
 }
 
 

@@ -10,6 +10,12 @@ fi
 
 echo "coach_claude started. Schedule: Mon & Fri 05:00 ${TZ:-UTC}."
 
+# `web` starts the feedback web app instead of the cron scheduler.
+if [ "$1" = "web" ]; then
+  echo "Starting feedback web app on port ${WEB_PORT:-8080}."
+  exec python -m src.web
+fi
+
 # If arguments are passed (e.g. `docker compose run coach monday`), run the
 # workout script directly instead of starting cron. Handy for test sends.
 if [ $# -gt 0 ]; then

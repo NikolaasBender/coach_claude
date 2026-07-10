@@ -4,36 +4,63 @@ Auto-generates a strength workout twice a week (Mon & Fri, 5am) and emails it to
 you. Built to supplement gravel/MTB cardio training and keep a repaired left
 shoulder healthy.
 
-An NVIDIA-hosted LLM designs each session from your profile + recent history
-(for progression & variety). Every workout is then checked against a hard
-**shoulder safety guardrail** in code — anything risky is rejected and the model
-is asked to swap it, falling back to a hand-vetted template if needed. The model
-never has the final say on safety.
+**Two** LLMs (NVIDIA Nemotron **and** DeepSeek) each design the session
+independently from your profile, multi-week training load, and recent feedback.
+The email shows both side by side so you can compare and pick. Every proposal is
+checked against a hard **shoulder safety guardrail** in code — anything risky is
+rejected and the model is asked to swap it, falling back to a hand-vetted
+template if needed. The model never has the final say on safety.
 
 ## How it works
 
 ```
-history.json ──▶ LLM proposes workout (JSON)
-                       │
-                       ▼
-              guardrail validator (exclusions.py)
-                 │ pass            │ fail
-                 ▼                 ▼
-              email          retry once, else
-                             safe template
+history.json + load analysis + Strava + feedback
+        │
+        ▼
+  each model (Nemotron, DeepSeek) proposes a workout (JSON)
+        │
+        ▼
+  guardrail validator (exclusions.py)
+     │ pass            │ fail
+     ▼                 ▼
+  email BOTH      retry once, else
+  side by side    safe template
+        │
+        ▼
+  feedback web app (port 8080) ──▶ feedback.json ──▶ next prompt
 ```
+
+### What each session now guarantees
+
+- **Load awareness** — a multi-week digest of what's been programmed (exercise
+  frequency, avg RPE, recent focus) goes into the prompt, and the model
+  acknowledges the recent block in its coach notes.
+- **A hip bridge every time**, rotating single-leg → weighted → unweighted.
+- **A dedicated lower-core movement** (leg raises, dead bugs, reverse crunch…).
+- **More variety** — larger exercise pools; the model is told to rotate away
+  from whatever it used most recently.
+
+## Feedback web app
+
+An always-on Flask app (second container, port `8080`) lists recent sessions and
+lets you log a rating, which coach you preferred, and notes. It writes to
+`data/feedback.json` on the shared volume, which feeds straight back into the
+next prompt. Reach it on your LAN at `http://<pi-host>:8080` — set that same URL
+as `WEB_URL` in `.env` so the workout emails link to it.
 
 ## Setup
 
-1. **Rotate / get an NVIDIA API key** — sign up at https://build.nvidia.com,
-   generate a key (`nvapi-...`).
+1. **API keys** — an NVIDIA key (`nvapi-...`) from https://build.nvidia.com and
+   a DeepSeek key (`sk-...`) from https://platform.deepseek.com. Either can be
+   left blank to disable that model; if both are set you get both proposals.
 2. **Gmail App Password** — https://myaccount.google.com/apppasswords
    (requires 2FA on your Google account). This is a 16-char password, *not* your
    real one.
 3. **Configure:**
    ```bash
    cp .env.example .env
-   # edit .env: NVIDIA_API_KEY, GMAIL_ADDRESS, GMAIL_APP_PASSWORD, TZ
+   # edit .env: NVIDIA_API_KEY, DEEPSEEK_API_KEY, GMAIL_ADDRESS,
+   #            GMAIL_APP_PASSWORD, WEB_URL, TZ
    ```
    ⚠️ Set `TZ` to your actual timezone (e.g. `America/Denver`) or 5am will fire
    in the wrong zone.
@@ -52,14 +79,23 @@ docker compose build
 docker compose run --rm coach python -m src.main monday
 ```
 
+Run the feedback app locally without Docker:
+
+```bash
+pip install -r requirements.txt
+python -m src.web   # serves on http://localhost:8080
+```
+
 ## Tuning
 
 | What | Where |
 |---|---|
 | Athlete profile, equipment, day focus | `src/profile.py` |
 | Shoulder exclusion rules (the guardrail) | `src/exclusions.py` |
-| Safe fallback exercises | `src/templates.py` |
-| Deload frequency, model, schedule | `.env`, `crontab` |
+| Safe fallback exercises, hip-bridge rotation, core pool | `src/templates.py` |
+| LLM providers (Nemotron / DeepSeek) | `src/llm.py` `PROVIDERS` |
+| Feedback web app | `src/web.py` |
+| Deload frequency, models, web port, schedule | `.env`, `crontab` |
 
 ## Safety note
 
