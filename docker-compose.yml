@@ -1,6 +1,7 @@
 services:
   coach:
     build: .
+    image: coach_claude:local
     container_name: coach_claude
     restart: unless-stopped
     env_file: .env
@@ -8,7 +9,25 @@ services:
       # Ensure TZ reaches the entrypoint even if commented out in .env.
       TZ: ${TZ:-America/New_York}
     volumes:
-      # Persistent workout history across restarts.
+      # Persistent workout history + feedback across restarts.
       - ./data:/data
       # Mount .env into the workdir so cron jobs can load it via python-dotenv.
+      - ./.env:/app/.env:ro
+
+  # Always-on feedback web app. Reuses the image built by `coach`.
+  web:
+    image: coach_claude:local
+    container_name: coach_claude_web
+    depends_on:
+      - coach
+    command: ["web"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-America/New_York}
+      WEB_PORT: ${WEB_PORT:-8080}
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+    volumes:
+      - ./data:/data
       - ./.env:/app/.env:ro

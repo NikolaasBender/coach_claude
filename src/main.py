@@ -1,13 +1,17 @@
-"""Entrypoint: decide today's day, generate a safe workout, email it, log it.
+"""Entrypoint: decide today's day, generate safe workouts, email them, log them.
 
 Flow:
   1. Determine target day (monday/friday) — from arg, env, or system clock.
   2. Decide deload (every 5th session since last deload).
-  3. Try LLM -> validate against shoulder guardrail -> one retry -> else template.
-  4. Email it and append to history.
+  3. Gather context: recent history, multi-week load analysis, Strava load,
+     recent athlete feedback, and the rotating mandatory hip-bridge variant.
+  4. Ask EVERY configured model (Nemotron + DeepSeek) for a session. Each is
+     validated against the shoulder guardrail with one corrective retry, then
+     falls back to a hand-vetted template if still unsafe.
+  5. Email all surviving proposals side by side and append the session to history.
 
-Safe by construction: anything the LLM proposes is rejected if it trips the
-exclusion list, and a hand-vetted template is always available as a fallback.
+Safe by construction: anything a model proposes is rejected if it trips the
+exclusion list, and a template is always available as a fallback.
 """
 
 import os
@@ -19,7 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # cron in a container does NOT inherit env — load .env explicitly
 
-from . import history, llm, strava, templates
+from . import feedback, history, llm, strava, templates
 from .email_send import send
 from .exclusions import validate_workout
 
@@ -37,46 +41,103 @@ def target_day():
     return today if today in ("monday", "friday") else "monday"
 
 
-def build_workout(day, deload, recent, strava_ctx):
-    """LLM with validation + one retry, falling back to a safe template."""
+def _ensure_hip_bridge(workout, bridge):
+    """Guarantee the mandated hip bridge is present (user requirement: every
+    session). If no bridge exists in any block, append it to the Main block."""
+    has_bridge = any(
+        "bridge" in ex.get("name", "").lower()
+        for block in workout.get("blocks", [])
+        for ex in block.get("exercises", [])
+    )
+    if has_bridge:
+        return
+    ex = dict(bridge)
+    ex.pop("variant", None)
+    for block in workout.get("blocks", []):
+        if block.get("name", "").lower() == "main":
+            block.setdefault("exercises", []).append(ex)
+            return
+    # No Main block? Add one so the requirement still holds.
+    workout.setdefault("blocks", []).append({"name": "Main", "exercises": [ex]})
+
+
+def build_variant(provider, day, deload, ctx):
+    """One provider's proposal: LLM with validation + one retry, else template."""
+    label = provider["label"]
     try:
-        workout = llm.generate(day, deload, recent, strava=strava_ctx)
+        workout = llm.generate(
+            provider, day, deload, ctx["recent"], strava=ctx["strava"],
+            load_summary=ctx["load_summary"], feedback=ctx["feedback"],
+            hip_bridge=ctx["bridge"],
+        )
         ok, violations = validate_workout(workout)
+        if not ok:
+            print(f"[guardrail:{label}] tripped exclusions: {violations}", file=sys.stderr)
+            fix = "Remove/replace these — they violate the shoulder rules: " + "; ".join(violations)
+            workout = llm.generate(
+                provider, day, deload, ctx["recent"], strava=ctx["strava"],
+                load_summary=ctx["load_summary"], feedback=ctx["feedback"],
+                hip_bridge=ctx["bridge"], extra_note=fix,
+            )
+            ok, violations = validate_workout(workout)
         if ok:
+            _ensure_hip_bridge(workout, ctx["bridge"])
             return workout
-        print(f"[guardrail] LLM tripped exclusions: {violations}", file=sys.stderr)
-
-        # One corrective retry, naming the offending exercises.
-        fix = "Remove/replace these — they violate the shoulder rules: " + "; ".join(violations)
-        workout = llm.generate(day, deload, recent, strava=strava_ctx, extra_note=fix)
-        ok, violations = validate_workout(workout)
-        if ok:
-            return workout
-        print(f"[guardrail] retry still unsafe: {violations} -> template", file=sys.stderr)
+        print(f"[guardrail:{label}] retry still unsafe: {violations} -> template", file=sys.stderr)
     except Exception as e:
-        print(f"[llm] failed ({e}) -> template", file=sys.stderr)
+        print(f"[llm:{label}] failed ({e}) -> template", file=sys.stderr)
 
-    seed = f"{day}-{datetime.now().date().isoformat()}"
-    return templates.generate(day, deload, seed)
+    # Fallback: a safe template, tagged with this provider's label.
+    seed = f"{label}-{day}-{datetime.now().date().isoformat()}"
+    workout = templates.generate(day, deload, seed, session_index=ctx["session_index"])
+    workout["model"] = f"{label} (fallback: template)"
+    return workout
 
 
 def main():
     day = target_day()
     deload = history.weeks_since_deload() >= (DELOAD_EVERY - 1)
-    recent = history.recent(4)
-    strava_ctx = strava.load_context()
+    session_index = history.count()
 
-    workout = build_workout(day, deload, recent, strava_ctx)
+    ctx = {
+        "recent": history.recent(4),
+        "load_summary": history.load_summary(),
+        "feedback": feedback.summary(),
+        "strava": strava.load_context(),
+        "bridge": templates.hip_bridge(session_index),
+        "session_index": session_index,
+    }
 
-    # Final safety net: a template should always pass, but never email an
-    # unvalidated workout.
-    ok, violations = validate_workout(workout)
-    if not ok:
-        raise RuntimeError(f"refusing to send unsafe workout: {violations}")
+    providers = llm.active_providers()
+    if not providers:
+        print("[warn] no LLM providers configured — using template only", file=sys.stderr)
+        seed = f"template-{day}-{datetime.now().date().isoformat()}"
+        w = templates.generate(day, deload, seed, session_index=session_index)
+        variants = [{"model": "Template", "workout": w}]
+    else:
+        variants = []
+        for provider in providers:
+            w = build_variant(provider, day, deload, ctx)
+            variants.append({"model": w.get("model", provider["label"]), "workout": w})
 
-    send(workout)
-    history.append(workout)
-    print(f"[ok] sent {day} workout (source={workout.get('source')}, deload={deload})")
+    # Final safety net: never email an unvalidated workout.
+    for v in variants:
+        ok, violations = validate_workout(v["workout"])
+        if not ok:
+            raise RuntimeError(f"refusing to send unsafe workout ({v['model']}): {violations}")
+
+    session = {
+        "day": day,
+        "deload": deload,
+        "date": datetime.now().date().isoformat(),
+        "source": "llm" if providers else "template",
+        "variants": variants,
+    }
+
+    send(session)
+    history.append(session)
+    models = ", ".join(v["model"] for v in variants)
+    print(f"[ok] sent {day} session (models=[{models}], deload={deload})")
 
 
 if __name__ == "__main__":
