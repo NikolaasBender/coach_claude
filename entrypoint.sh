@@ -16,10 +16,16 @@ if [ "$1" = "web" ]; then
   exec python -m src.web
 fi
 
-# If arguments are passed (e.g. `docker compose run coach monday`), run the
-# workout script directly instead of starting cron. Handy for test sends.
+# Day arguments run the workout script directly instead of starting cron
+# (e.g. `docker compose run --rm coach monday`). Handy for test sends.
+case "$1" in
+  monday|friday) exec python -m src.main "$@" ;;
+esac
+
+# Anything else is a verbatim command, e.g. the one-time Garmin login:
+#   docker compose run --rm coach python -m src.setup_garmin
 if [ $# -gt 0 ]; then
-  exec python -m src.main "$@"
+  exec "$@"
 fi
 
 # cron reads the container env via the .env file (python-dotenv), so we don't
