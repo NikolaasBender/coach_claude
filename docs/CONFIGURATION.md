@@ -232,17 +232,19 @@ When TE is absent (e.g. manual entries), a moving-time heuristic applies: ≥ 3h
 
 ### Pattern Analysis Output
 
-The `_analyze_3week_pattern()` function produces:
+The `_analyze_3week_pattern()` function produces (buckets are trailing 7-day
+blocks anchored to today, not calendar weeks — calendar weeks would split the
+21-day window into four partial buckets):
 
 ```
 3-WEEK TRAINING PATTERN ANALYSIS:
-  Week 2025-W01: 4 activities, 8.5h, 250km, 3200m elev (+1.2h ↑)
+  15-21d (1–7 Jan): 4 activities, 8.5h, 250km, 3200m elev
     Effort: 1E 2M 1H 0VH
     Days: Mon:1, Wed:1, Sat:1, Sun:1
-  Week 2025-W02: 3 activities, 7.3h, 210km, 2800m elev (-1.2h ↓)
+  8-14d (8–14 Jan): 3 activities, 7.3h, 210km, 2800m elev (-1.2h ↓)
     Effort: 2E 1M 0H 0VH
     Days: Tue:1, Fri:1, Sun:1
-  Week 2025-W03: 5 activities, 9.8h, 300km, 3500m elev (+2.5h ↑)
+  last 7d (15–21 Jan): 5 activities, 9.8h, 300km, 3500m elev (+2.5h ↑)
     Effort: 1E 3M 1H 0VH
     Days: Mon:1, Wed:1, Thu:1, Sat:1, Sun:1
   → Trend: Volume increasing (+1.3h over 3 weeks)

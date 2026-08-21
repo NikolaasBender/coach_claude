@@ -248,18 +248,24 @@ def _yesterday_note(activities, session_date):
            "Legs should be OK for planned intensity.")
     )
 
-def _pattern_data() -> dict:
+def _pattern_data(now=None) -> dict:
     """Structured 3-week pattern from stored activities.
+
+    Buckets are TRAILING 7-day blocks anchored to today (0-6d, 7-13d, 14-20d),
+    not calendar weeks: a 21-day window straddles four calendar weeks, so the
+    edge buckets arrive as 1-2 day slivers that read like a volume collapse.
 
     Returns {"weeks": [...], "trend_lines": [...]}, both empty when nothing is
     stored. Single source of truth for the LLM prompt text
     (_analyze_3week_pattern) and the email volume graph (email_send).
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
     _init_db()
     with sqlite3.connect(DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         # Get activities from last 21 days
-        since = (datetime.now(timezone.utc) - timedelta(days=21)).isoformat()
+        since = (now - timedelta(days=21)).isoformat()
         rows = conn.execute("""
             SELECT * FROM activities
             WHERE start_date >= ?
@@ -269,14 +275,18 @@ def _pattern_data() -> dict:
     if not rows:
         return {"weeks": [], "trend_lines": []}
 
-    # Group by ISO week
+    # Bucket into trailing 7-day blocks: 0 = last 7 days, 2 = 15-21 days ago.
     grouped = defaultdict(list)
     for r in rows:
-        grouped[_dt(r["start_date"]).strftime("%Y-W%U")].append(r)
+        block = (now - _dt(r["start_date"])).days // 7
+        if 0 <= block <= 2:
+            grouped[block].append(r)
 
+    labels = {0: "last 7d", 1: "8-14d", 2: "15-21d"}
     weeks = []
     prev_hours = None
-    for week_key, acts in sorted(grouped.items()):
+    for block in sorted(grouped, reverse=True):  # oldest block first
+        acts = grouped[block]
         total_hours = sum(a["moving_time"] for a in acts) / 3600
         effort_counts = {e: 0 for e in ("easy", "moderate", "hard", "very hard")}
         effort_hours = {e: 0.0 for e in ("easy", "moderate", "hard", "very hard")}
@@ -298,8 +308,11 @@ def _pattern_data() -> dict:
                 delta = f" ({d:.1f}h ↓)"
         prev_hours = total_hours
 
+        end = (now - timedelta(days=block * 7)).date()
+        start = (now - timedelta(days=block * 7 + 6)).date()
         weeks.append({
-            "week": week_key,
+            "label": labels[block],
+            "range": f"{start.strftime('%-d %b')}–{end.strftime('%-d %b')}",
             "count": len(acts),
             "hours": total_hours,
             "km": sum(a["distance"] for a in acts) / 1000,
@@ -338,7 +351,7 @@ def _analyze_3week_pattern(data=None) -> str:
     lines = ["3-WEEK TRAINING PATTERN ANALYSIS:"]
     for w in data["weeks"]:
         lines.append(
-            f"  Week {w['week']}: {w['count']} activities, {w['hours']:.1f}h, "
+            f"  {w['label']} ({w['range']}): {w['count']} activities, {w['hours']:.1f}h, "
             f"{w['km']:.0f}km, {w['elev']:.0f}m elev{w['delta']}"
         )
         ec = w["effort_counts"]

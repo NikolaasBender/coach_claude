@@ -443,8 +443,8 @@ Interactive CLI:
       "workout": { "blocks": [...], "focus": "...", "coach_notes": "..." }
     }
   ],
-  "pattern_analysis": "3-WEEK TRAINING PATTERN ANALYSIS:\n  Week 2025-W01: 4 activities, 8.5h, 250km, 3200m elev (+1.2h ↑)\n    Effort: 1E 2M 1H 0VH\n    Days: Mon:1, Wed:1, Sat:1, Sun:1\n  ...",
-  "pattern_weeks": [{"week": "2025-W01", "count": 4, "hours": 8.5, "km": 250, "elev": 3200, "effort_counts": {"easy": 1, "moderate": 2, "hard": 1, "very hard": 0}, "effort_hours": {"easy": 1.5, "moderate": 4.0, "hard": 3.0, "very hard": 0.0}, "days": "Mon:1, Sat:1, Sun:1, Wed:1", "delta": " (+1.2h ↑)"}],
+  "pattern_analysis": "3-WEEK TRAINING PATTERN ANALYSIS:\n  15-21d (1–7 Jan): 4 activities, 8.5h, 250km, 3200m elev\n    Effort: 1E 2M 1H 0VH\n    Days: Mon:1, Wed:1, Sat:1, Sun:1\n  ...",
+  "pattern_weeks": [{"label": "15-21d", "range": "1–7 Jan", "count": 4, "hours": 8.5, "km": 250, "elev": 3200, "effort_counts": {"easy": 1, "moderate": 2, "hard": 1, "very hard": 0}, "effort_hours": {"easy": 1.5, "moderate": 4.0, "hard": 3.0, "very hard": 0.0}, "days": "Mon:1, Sat:1, Sun:1, Wed:1", "delta": " (+1.2h ↑)"}],
   "pattern_trend": "→ Trend: Volume stable (+0.3h over 3 weeks)\n→ Weekend: 9.1h vs Weekday: 7.2h",
   "recovery": "  Sleep last night: 7.4h, score 82 GOOD — 7-day avg 7.1h, score 78\n  Stress (Tue 14 Jan): avg 28/100, max 71 — 7-day avg 31\n  ...",
   "trend_analysis": "- Volume stable around 8h/week with weekend-loaded rides\n- Recovery solid: sleep and HRV at baseline\nToday: keep planned intensity, progress hip thrust load."

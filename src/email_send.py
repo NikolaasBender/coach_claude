@@ -98,7 +98,7 @@ def _pattern_graph(weeks: list, trend: str) -> str:
                 continue
             segs += (f'<td width="{eh / hours * 100:.1f}%" bgcolor="{color}" '
                      f'style="line-height:14px;font-size:2px;">&nbsp;</td>')
-        label = html.escape((w.get("week") or "")[5:] or (w.get("week") or "?"))
+        label = html.escape(w.get("label") or w.get("range") or "?")
         stats = html.escape(
             f"{hours:.1f}h · {w.get('count', 0)} activities · "
             f"{w.get('km', 0):.0f}km · {w.get('elev', 0):.0f}m{w.get('delta', '')}"
