@@ -5,7 +5,6 @@
 - Docker + Docker Compose
 - Gmail account with 2FA enabled (for App Password)
 - NVIDIA API key (free from [build.nvidia.com](https://build.nvidia.com))
-- DeepSeek API key (from [platform.deepseek.com](https://platform.deepseek.com)) — optional but recommended
 - Strava account (optional but recommended for training load context)
 
 ## Quick Start
@@ -41,7 +40,7 @@ docker compose run --rm coach python -m src.main monday
 docker compose run --rm coach python -m src.main friday
 ```
 
-Check your email — you should receive a side-by-side comparison of both models' proposals.
+Check your email — you should receive a workout proposal with the 3-week Strava pattern analysis at the top.
 
 ## Run Feedback Web App Locally (Without Docker)
 
@@ -54,8 +53,7 @@ python -m src.web   # serves on http://localhost:8080
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `NVIDIA_API_KEY` | Yes* | NVIDIA Nemotron key (`nvapi-...`) |
-| `DEEPSEEK_API_KEY` | No | DeepSeek key (`sk-...`) — enables dual-model comparison |
+| `NVIDIA_API_KEY` | Yes | NVIDIA Nemotron key (`nvapi-...`) |
 | `GMAIL_ADDRESS` | Yes | Your Gmail address |
 | `GMAIL_APP_PASSWORD` | Yes | 16-char App Password (NOT your login password) |
 | `EMAIL_TO` | No | Recipient (defaults to `GMAIL_ADDRESS`) |
@@ -65,6 +63,7 @@ python -m src.web   # serves on http://localhost:8080
 | `STRAVA_CLIENT_ID` | No | Strava app Client ID |
 | `STRAVA_CLIENT_SECRET` | No | Strava app Client Secret |
 | `STRAVA_REFRESH_TOKEN` | No | From one-time OAuth (run `python -m src.setup_strava`) |
+| `STRAVA_DB_PATH` | No | Path to Strava SQLite DB (default: `/data/strava.db`) |
 | `FORCE_DAY` | No | Force `monday` or `friday` for testing (leave blank in prod) |
 | `HISTORY_PATH` | No | Default: `/data/history.json` |
 | `FEEDBACK_PATH` | No | Default: `/data/feedback.json` |
@@ -98,18 +97,18 @@ python -m src.web   # serves on http://localhost:8080
 coach_claude/
 ├── src/
 │   ├── main.py           # Orchestrator entrypoint
-│   ├── llm.py            # LLM providers (Nemotron, DeepSeek)
+│   ├── llm.py            # LLM provider (Nemotron)
 │   ├── exclusions.py     # Hard shoulder safety guardrail
 │   ├── templates.py      # Safe fallback workouts
 │   ├── history.py        # Persistent session log
 │   ├── feedback.py       # Athlete feedback log
-│   ├── strava.py         # Strava training load context
+│   ├── strava.py         # Strava training load context + 3-week pattern analysis
 │   ├── profile.py        # Athlete profile & equipment
 │   ├── web.py            # Flask feedback web app
 │   ├── email_send.py     # HTML email + Gmail SMTP
 │   ├── exercise_links.py # Exercise → YouTube URLs
 │   └── setup_strava.py   # One-time Strava OAuth
-├── data/                 # Mounted volume (history.json, feedback.json)
+├── data/                 # Mounted volume (history.json, feedback.json, strava.db)
 ├── .env                  # Your config (NOT committed)
 ├── .env.example          # Template
 ├── Dockerfile

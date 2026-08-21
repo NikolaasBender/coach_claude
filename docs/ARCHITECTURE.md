@@ -2,7 +2,7 @@
 
 ## System Purpose
 
-`coach_claude` automatically generates a strength workout twice a week (Monday & Friday, 5am local) and emails it to a gravel/MTB cyclist with a repaired left shoulder. Two LLMs (NVIDIA Nemotron and DeepSeek) independently design each session from the same context — athlete profile, multi-week training load, Strava ride data, and recent athlete feedback. The email shows both proposals side by side for comparison.
+`coach_claude` automatically generates a strength workout twice a week (Monday & Friday, 5am local) and emails it to a gravel/MTB cyclist with a repaired left shoulder. **NVIDIA Nemotron** designs each session from athlete profile, multi-week training load, Strava ride data (including a 3-week pattern analysis), and recent athlete feedback.
 
 **Safety is enforced in code, not by the model.** Every LLM proposal is validated against a hard exclusion guardrail (`exclusions.py`) with one corrective retry; if still unsafe, it falls back to a hand-vetted template. The model never has the final say on shoulder safety.
 
@@ -22,15 +22,14 @@
 │  3. Gather context:                                              │
 │     • Recent history (last 4 sessions)                          │
 │     • Multi-week load analysis (exercise freq, avg RPE, focus)  │
-│     • Strava 7-day ride summary + yesterday detail              │
+│     • Strava 3-week pattern analysis + 7-day summary + yesterday│
 │     • Recent athlete feedback (last 6 entries)                  │
 │     • Mandatory hip-bridge variant (rotates SL → weighted → BW) │
-│  4. For EACH active provider (Nemotron, DeepSeek):              │
-│     a. Call LLM with full context                               │
-│     b. Validate against exclusions.py                           │
-│     c. One retry on failure                                     │
-│     d. Fallback to template if still unsafe                     │
-│  5. Email all surviving proposals side by side                  │
+│  4. Call Nemotron LLM with full context                         │
+│     a. Validate against exclusions.py                           │
+│     b. One retry on failure                                     │
+│     c. Fallback to template if still unsafe                     │
+│  5. Email proposal with 3-week pattern analysis at top          │
 │  6. Append session to history.json                              │
 └───────────────────────────┬──────────────────────────────────────┘
                             │
@@ -40,11 +39,10 @@
 │     Feedback Web        │   │      Data Volume        │
 │     (Flask, port 8080)  │   │  /data/history.json     │
 │                         │   │  /data/feedback.json    │
-│ • Lists recent sessions │   └─────────────────────────┘
-│ • Logs rating + notes   │
+│ • Lists recent sessions │   │  /data/strava.db        │
+│ • Logs rating + notes   │   └─────────────────────────┘
 │ • Feeds next prompt     │
 └─────────────────────────┘
-```
 
 ## Container Architecture (Docker Compose)
 
@@ -70,8 +68,8 @@ Both mount:
 - Appends to history
 
 ### `src/llm.py` — LLM Layer
-- `PROVIDERS` registry: Nemotron + DeepSeek (OpenAI-compatible endpoints)
-- Active providers = those with API keys in env
+- `PROVIDERS` registry: **Nemotron only** (OpenAI-compatible endpoint)
+- Active provider = Nemotron when `NVIDIA_API_KEY` is set in env
 - `_build_user_prompt()`: injects athlete profile, constraints, context
 - `generate()`: calls provider, extracts JSON, returns workout dict
 
@@ -97,9 +95,16 @@ Both mount:
 - Web app writes; generator reads `recent(n)` → `summary(n)` for prompt
 - Tracks: rating (1-5), preferred_model, notes, session_date, day
 
-### `src/strava.py` — Training Load Context
+### `src/strava.py` — Training Load Context & 3-Week Pattern Analysis
 - OAuth refresh token flow (one-time setup via `setup_strava.py`)
-- `load_context(session_date)` → `{summary, yesterday_note}`
+- **SQLite persistence** (`data/strava.db`): activities table keyed by Strava activity ID
+- `_fetch_3weeks()`: paginated 21-day fetch from Strava API
+- `_upsert_activities()`: idempotent upsert by Strava ID
+- `_analyze_3week_pattern()`: builds pattern analysis from stored data:
+  - Weekly breakdown: rides, hours, distance, elevation, effort distribution (E/M/H/VH), day-of-week pattern
+  - Trend detection: volume increasing/decreasing/stable over 3 weeks
+  - Weekend vs weekday split
+- `load_context(session_date)` → `{summary, yesterday_note, pattern_analysis}`
 - Classifies rides by suffer score: easy/moderate/hard/very hard
 
 ### `src/profile.py` — Athlete Profile (Single Source of Truth)
@@ -110,17 +115,11 @@ Both mount:
 - `FINISHER_THEMES`: cycling-relevant finisher categories
 
 ### `src/web.py` — Feedback Web App (Flask)
-- `/` — lists recent sessions with feedback forms
-- `/generate` — manual trigger (one-at-a-time lock)
-- `/feedback` — POST endpoint for rating + notes
-- `/healthz` — health check
-- Jinja-free: renders HTML via Python string templates
-
 ### `src/email_send.py` — Email Rendering & Delivery
-- `render_html(session)`: side-by-side variant tables with exercise links
+- `render_html(session)`: **3-week pattern analysis at top**, then side-by-side variant tables with exercise links
 - `send(session)`: Gmail SMTP (port 587, STARTTLS, App Password)
 - Uses `exercise_links.get_url()` for YouTube search links
-
+- Jinja-free: renders HTML via Python string templates
 ### `src/exercise_links.py` — Exercise → YouTube Mapping
 - Curated `_QUERIES` dict for known exercises
 - Fallback: generic YouTube search for unknown names
@@ -132,28 +131,30 @@ Both mount:
 
 ## Data Flow Summary
 
-```
 cron (5am Mon/Fri)
        │
        ▼
 main.py ──▶ history.json (read)
        │
-       ├─▶ strava.load_context() ──▶ Strava API
+       ├─▶ strava.load_context() ──▶ Strava API (21 days)
+       │       │
+       │       ├─▶ _fetch_3weeks() → upsert to strava.db
+       │       └─▶ _analyze_3week_pattern() → pattern_analysis
        │
        ├─▶ feedback.summary() ──▶ feedback.json (read)
        │
        ├─▶ templates.hip_bridge(session_index)
        │
-       ├─▶ llm.generate() × N providers
+       ├─▶ llm.generate() (Nemotron)
        │       │
-       │       ├─▶ LLM API (Nemotron / DeepSeek)
+       │       ├─▶ LLM API
        │       │
        │       └─▶ exclusions.validate_workout()
        │               │
        │               ├─ pass → keep
        │               └─ fail → retry once → templates.generate()
        │
-       ├─▶ email_send.render_html() + send()
+       ├─▶ email_send.render_html() + send() (pattern_analysis at top)
        │
        └─▶ history.append() ──▶ history.json (write)
 
@@ -177,8 +178,9 @@ Web app (port 8080)
 ## Configuration
 
 All via `.env` (see `.env.example`):
-- API keys: `NVIDIA_API_KEY`, `DEEPSEEK_API_KEY`
+- API keys: `NVIDIA_API_KEY` (DeepSeek removed)
 - Gmail: `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, `EMAIL_TO`
 - Strava: `STRAVA_CLIENT_ID`, `STRAVA_CLIENT_SECRET`, `STRAVA_REFRESH_TOKEN`
+- Strava DB: `STRAVA_DB_PATH` (default: `data/strava.db`)
 - Behavior: `DELOAD_EVERY`, `TZ`, `WEB_URL`, `FORCE_DAY`
 - Paths: `HISTORY_PATH`, `FEEDBACK_PATH` (default to `/data/...` in Docker)

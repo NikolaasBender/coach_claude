@@ -17,11 +17,11 @@ All configuration lives in `.env` at the project root. Copy `.env.example` to `.
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `DEEPSEEK_API_KEY` | `sk-abc123...` | DeepSeek API key from platform.deepseek.com. Enables dual-model comparison. |
 | `WEB_URL` | `http://orangepi.local:8080` | Public URL of feedback web app. Included in workout emails as "Log Feedback" link. |
 | `STRAVA_CLIENT_ID` | `123456` | Strava app Client ID from strava.com/settings/api. |
 | `STRAVA_CLIENT_SECRET` | `abcdef...` | Strava app Client Secret. |
 | `STRAVA_REFRESH_TOKEN` | `xyz...` | From one-time OAuth (`python -m src.setup_strava`). Enables training load context. |
+| `STRAVA_DB_PATH` | `/data/strava.db` | Path to Strava SQLite database (mounted volume in Docker). |
 
 ### Optional
 
@@ -54,11 +54,10 @@ Providers are defined in the `PROVIDERS` list. Each entry:
 
 A provider is **active** only when its `key_env` is set and non-empty. Drop a key to disable that model cleanly.
 
-Current defaults:
+Current default:
 - **Nemotron**: NVIDIA's Nemotron 3 Ultra (via build.nvidia.com)
-- **DeepSeek**: DeepSeek V4 Pro (via api.deepseek.com)
 
-Both use OpenAI-compatible `/chat/completions` endpoints.
+Uses OpenAI-compatible `/chat/completions` endpoint.
 
 ## Athlete Profile (`src/profile.py`)
 
@@ -171,6 +170,50 @@ All exercises pre-vetted against exclusions. Pools:
 1. **Shoulder rehab block** (from `REHAB_BLOCK`)
 2. **Mandatory hip bridge** (rotating variant from `HIP_BRIDGES`)
 3. **Dedicated lower-core movement** (from `LOWER_CORE`)
+
+## Strava 3-Week Pattern Analysis (`src/strava.py`)
+
+The system now fetches 21 days of Strava activities, persists them to a SQLite database (`data/strava.db`), and builds a 3-week pattern analysis that appears at the top of every workout email.
+
+### Database Schema
+
+Table `activities` (keyed by Strava activity ID):
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PRIMARY KEY | Auto-increment |
+| `strava_id` | INTEGER UNIQUE NOT NULL | Strava activity ID |
+| `name` | TEXT | Activity name |
+| `sport_type` | TEXT | e.g., "Ride", "GravelRide" |
+| `start_date` | TEXT | ISO 8601 timestamp |
+| `moving_time` | INTEGER | Seconds |
+| `distance` | REAL | Meters |
+| `total_elevation_gain` | REAL | Meters |
+| `suffer_score` | INTEGER | Strava relative effort |
+| `raw_json` | TEXT | Full activity JSON for future use |
+| `created_at` | TEXT | Auto timestamp |
+
+Index on `start_date` for fast time-range queries.
+
+### Pattern Analysis Output
+
+The `_analyze_3week_pattern()` function produces:
+
+```
+3-WEEK TRAINING PATTERN ANALYSIS:
+  Week 2025-W01: 4 rides, 8.5h, 250km, 3200m elev (+1.2h ↑)
+    Effort: 1E 2M 1H 0VH
+    Days: Mon:1, Wed:1, Sat:1, Sun:1
+  Week 2025-W02: 3 rides, 7.3h, 210km, 2800m elev (-1.2h ↓)
+    Effort: 2E 1M 0H 0VH
+    Days: Tue:1, Fri:1, Sun:1
+  Week 2025-W03: 5 rides, 9.8h, 300km, 3500m elev (+2.5h ↑)
+    Effort: 1E 3M 1H 0VH
+    Days: Mon:1, Wed:1, Thu:1, Sat:1, Sun:1
+  → Trend: Volume increasing (+1.3h over 3 weeks)
+  → Weekend: 5.2h vs Weekday: 4.6h
+```
+
+This analysis is injected into the LLM prompt via `strava.load_context()` → `pattern_analysis` field, and rendered at the top of the workout email.
 
 ## Docker Compose Overrides
 

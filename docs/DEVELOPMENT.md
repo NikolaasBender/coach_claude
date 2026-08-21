@@ -225,11 +225,19 @@ Current: `activity:read` only. To add more:
 
 ### Activity Filtering
 Edit `src/strava.py`:
-- `_fetch_activities()` — change `days` parameter
+- `_fetch_activities()` — change `days` parameter (legacy 7-day fetch)
+- `_fetch_3weeks()` — change pagination or date range for 21-day fetch
 - `_classify_effort()` — adjust suffer score thresholds
 - `_summarize()` — change summary format
 - `_yesterday_note()` — change detail level
+- `_analyze_3week_pattern()` — modify pattern analysis output format
+- `_upsert_activities()` — change DB schema or upsert logic
 
+### Database Schema Changes
+If modifying the `activities` table:
+1. Edit `_init_db()` in `strava.py`
+2. Add migration logic or reset DB: `docker compose run --rm --entrypoint "" coach rm /data/strava.db`
+3. Rebuild: `docker compose up -d --build`
 ## Adding Scheduled Runs
 
 ### 1. Edit `crontab`

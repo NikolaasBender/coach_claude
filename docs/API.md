@@ -19,14 +19,11 @@ Returns workout dict with `model`, `workout`, `focus`, `coach_notes`.
 Full orchestration:
 1. `day = target_day()`
 2. `deload = (history.weeks_since_deload() >= DELOAD_EVERY)`
-3. `ctx = { history, load_summary, strava, feedback, hip_bridge }`
-4. For each active provider: `build_variant()`
-5. `email_send.send(session)` with all variants
-6. `history.append(session)`
-
----
-
-## `src/llm.py` — LLM Layer
+3. `strava_ctx = strava.load_context()` → includes `pattern_analysis`
+4. `ctx = { history, load_summary, strava, feedback, hip_bridge }`
+5. Call Nemotron via `build_variant()` (single provider)
+6. `email_send.send(session)` with `pattern_analysis` at top
+7. `history.append(session)`
 
 ### `PROVIDERS: list[dict]`
 Registry of provider configs. Each:
@@ -189,16 +186,31 @@ Returns "No athlete feedback logged yet." if empty.
 
 ---
 
-## `src/strava.py` — Strava Training Load Context
+## `src/strava.py` — Strava Training Load Context & 3-Week Pattern Analysis
 
 ### `load_context(session_date=None) -> dict`
-Returns `{"summary": str, "yesterday_note": str | None}` for LLM prompt.
+Returns `{"summary": str, "yesterday_note": str | None, "pattern_analysis": str}` for LLM prompt and email.
 
 **Flow:**
 1. `_refresh_access_token()` — exchanges `STRAVA_REFRESH_TOKEN` for fresh access token
-2. `_fetch_activities(access_token, days=7)` — gets last 7 days of activities
-3. `_summarize(activities)` — builds human-readable summary
-4. `_yesterday_note(activities, session_date)` — specific note on day-before ride
+2. `_fetch_3weeks(access_token)` — paginated fetch of last 21 days of activities
+3. `_upsert_activities(activities)` — idempotent upsert to SQLite (`data/strava.db`) by Strava activity ID
+4. Filter last 7 days for summary/yesterday
+5. `_summarize(activities_7d)` — builds human-readable 7-day summary
+6. `_yesterday_note(activities_7d, session_date)` — specific note on day-before ride
+7. `_analyze_3week_pattern()` — builds 3-week pattern analysis from stored DB data
+
+### `_fetch_3weeks(access_token) -> list[dict]`
+Fetches activities for last 21 days with pagination (100 per page). Returns full activity list.
+
+### `_upsert_activities(activities: list[dict]) -> int`
+Upserts activities by `strava_id` (INSERT ... ON CONFLICT). Returns count of new/updated rows.
+
+### `_analyze_3week_pattern() -> str`
+Analyzes last 3 weeks of stored activities and returns pattern summary including:
+- Weekly breakdown: rides, hours, distance, elevation, effort distribution (E/M/H/VH), day-of-week pattern
+- Trend detection: volume increasing/decreasing/stable over 3 weeks
+- Weekend vs weekday split
 
 ### `_classify_effort(activity) -> str`
 Classifies ride by suffer score:
@@ -210,6 +222,23 @@ Classifies ride by suffer score:
 ### `_summarize(activities) -> str`
 Aggregates: ride count, total suffer score, avg suffer, hardest ride, distribution.
 
+### Database Schema
+Table `activities` (keyed by Strava activity ID):
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PRIMARY KEY | Auto-increment |
+| `strava_id` | INTEGER UNIQUE NOT NULL | Strava activity ID |
+| `name` | TEXT | Activity name |
+| `sport_type` | TEXT | e.g., "Ride", "GravelRide" |
+| `start_date` | TEXT | ISO 8601 timestamp |
+| `moving_time` | INTEGER | Seconds |
+| `distance` | REAL | Meters |
+| `total_elevation_gain` | REAL | Meters |
+| `suffer_score` | INTEGER | Strava relative effort |
+| `raw_json` | TEXT | Full activity JSON for future use |
+| `created_at` | TEXT | Auto timestamp |
+
+Index on `start_date` for fast time-range queries.
 ---
 
 ## `src/profile.py` — Athlete Profile
@@ -274,18 +303,18 @@ Renders workout blocks as HTML tables with exercise links.
 
 ### `render_html(session: dict) -> str`
 Full HTML email with:
+- **3-week pattern analysis at top** (from `session.pattern_analysis`)
 - Day + deload banner
-- Side-by-side variant tables
+- Variant table (single Nemotron proposal)
 - Coach notes per variant
 - "Log Feedback" CTA button (links to `WEB_URL`)
-- Comparison hint
+- Comparison hint (only when multiple variants)
 
 ### `send(session: dict) -> None`
 Sends via Gmail SMTP (port 587, STARTTLS):
 - From: `GMAIL_ADDRESS`
 - To: `EMAIL_TO` or `GMAIL_ADDRESS`
-- Subject: `Strength — {Day} {date} ({model1} vs {model2})`
-- Body: HTML from `render_html()`
+- Subject: `Strength — {Day} {date} (Nemotron)`
 
 ---
 
@@ -328,26 +357,11 @@ Interactive CLI:
       "model": "Nemotron",
       "workout": { "blocks": [...], "focus": "...", "coach_notes": "..." },
       "source": "llm"
-    },
-    {
-      "model": "DeepSeek",
-      "workout": { ... },
-      "source": "llm"
     }
   ],
+  "pattern_analysis": "3-WEEK TRAINING PATTERN ANALYSIS:\n  Week 2025-W01: 4 rides, 8.5h, 250km, 3200m elev (+1.2h ↑)\n    Effort: 1E 2M 1H 0VH\n    Days: Mon:1, Wed:1, Sat:1, Sun:1\n  ...",
   "strava_summary": "...",
   "feedback_summary": "..."
-}
-```
-
-**Legacy single-workout shape** (also tolerated):
-```json
-{
-  "date": "2025-01-15",
-  "day": "monday",
-  "model": "Nemotron",
-  "workout": { "blocks": [...], "focus": "..." },
-  "source": "llm"
 }
 ```
 

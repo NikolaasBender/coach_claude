@@ -14,7 +14,7 @@ docker compose logs -f coach
 Expected log on run days (Mon/Fri ~5am):
 ```
 coach_claude started. Schedule: Mon & Fri 05:00 America/Denver.
-[ok] sent monday session (models=[Nemotron, DeepSeek], deload=False)
+[ok] sent monday session (models=[Nemotron], deload=False)
 ```
 
 ### Check Web App
@@ -119,11 +119,15 @@ print(json.dumps(w, indent=2))
 
 ### Test Strava Context
 ```bash
-docker compose run --rm coach python -c "
+docker compose run --rm --entrypoint "" coach python -c "
 from src.strava import load_context
 import json
 ctx = load_context()
-print(json.dumps(ctx, indent=2))
+print('=== SUMMARY (7 days) ===')
+print(ctx['summary'])
+print()
+print('=== PATTERN ANALYSIS (3 weeks) ===')
+print(ctx['pattern_analysis'])
 "
 ```
 
@@ -174,6 +178,39 @@ PROVIDERS = [
 ```
 Add API key to `.env`, rebuild: `docker compose up -d --build`
 
+
+### Inspect Strava 3-Week Pattern Analysis
+```bash
+# View pattern analysis from DB
+docker compose run --rm --entrypoint "" coach python -c "
+from src.strava import load_context
+ctx = load_context()
+print('=== PATTERN ANALYSIS ===')
+print(ctx['pattern_analysis'])
+"
+```
+
+### View Strava Database
+```bash
+# Check activities in DB
+docker compose run --rm --entrypoint "" coach python -c "
+import sqlite3
+conn = sqlite3.connect('/data/strava.db')
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+cur.execute('SELECT COUNT(*) as cnt FROM activities')
+print('Total activities:', cur.fetchone()['cnt'])
+cur.execute('SELECT strava_id, start_date, moving_time/3600.0 as hours, suffer_score FROM activities ORDER BY start_date DESC LIMIT 10')
+for row in cur.fetchall():
+    print(f\"  {row['strava_id']}: {row['start_date']} - {row['hours']:.2f}h - score:{row['suffer_score']}\")
+"
+```
+
+### Reset Strava Database (if corrupted)
+```bash
+docker compose run --rm --entrypoint "" coach rm /data/strava.db
+# Next run will re-fetch 21 days and rebuild
+```
 ### Add Exercise to Template Pools
 Edit `src/templates.py`:
 1. Add to appropriate pool (`REHAB_BLOCK`, `LOWER_POWER`, etc.)
@@ -352,5 +389,6 @@ docker compose restart coach
 - [ ] Verify email received (check spam)
 - [ ] Log feedback via web app for at least one session
 - [ ] Check `docker compose ps` — both containers `Up`
-- [ ] Verify `data/history.json` and `data/feedback.json` growing
+- [ ] Verify `data/history.json`, `data/feedback.json`, and `data/strava.db` growing
 - [ ] Review any exclusion violations in logs (search for "violation")
+- [ ] Check Strava pattern analysis appears in email (top section)
