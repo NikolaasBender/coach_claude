@@ -8,6 +8,7 @@ Uses a Gmail App Password (16 chars), NOT the account password — Google blocks
 basic auth otherwise. Port 587 + STARTTLS.
 """
 
+import html
 import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -56,11 +57,95 @@ def _table(workout: dict) -> str:
     return blocks_html
 
 
+def _context_box(title: str, text: str) -> str:
+    """Monospace context block (recovery snapshot, pattern analysis)."""
+    escaped = html.escape(text).replace("\n", "<br>")
+    return f"""
+      <div style="margin-bottom:18px;padding:14px 16px;background:#f5f5f5;border-left:4px solid #555;border-radius:4px;font-family:monospace;font-size:13px;line-height:1.5;white-space:pre-wrap;">
+        <strong>{title}</strong><br>
+        {escaped}
+      </div>"""
+
+
+# Effort colors for the weekly volume graph (email-safe hex, rendered order).
+_EFFORT_COLORS = (
+    ("easy", "#7fb069"),
+    ("moderate", "#f2c14e"),
+    ("hard", "#f4845f"),
+    ("very hard", "#c9484f"),
+)
+
+
+def _pattern_graph(weeks: list, trend: str) -> str:
+    """Email-safe 3-week volume graph plus the trend lines.
+
+    Table-based stacked bars with inline styles only — no JS, no external CSS,
+    no images — so it survives Gmail. Bar length ∝ weekly hours (scaled to the
+    biggest week); segments colored by effort-hours share.
+    """
+    max_hours = max((w.get("hours", 0) for w in weeks), default=0)
+    if max_hours <= 0:
+        return ""
+
+    bar_rows = ""
+    for w in weeks:
+        hours = w.get("hours", 0)
+        fill_pct = max(hours / max_hours * 100, 2)
+        segs = ""
+        for effort, color in _EFFORT_COLORS:
+            eh = (w.get("effort_hours") or {}).get(effort, 0)
+            if eh <= 0 or hours <= 0:
+                continue
+            segs += (f'<td width="{eh / hours * 100:.1f}%" bgcolor="{color}" '
+                     f'style="line-height:14px;font-size:2px;">&nbsp;</td>')
+        label = html.escape((w.get("week") or "")[5:] or (w.get("week") or "?"))
+        stats = html.escape(
+            f"{hours:.1f}h · {w.get('count', 0)} activities · "
+            f"{w.get('km', 0):.0f}km · {w.get('elev', 0):.0f}m{w.get('delta', '')}"
+        )
+        bar_rows += f"""
+          <tr>
+            <td style="font-family:monospace;font-size:12px;padding:6px 8px 0 0;white-space:nowrap;vertical-align:middle;">{label}</td>
+            <td style="width:100%;padding:6px 0 0;vertical-align:middle;">
+              <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
+                <td width="{fill_pct:.1f}%">
+                  <table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>{segs}</tr></table>
+                </td>
+                <td bgcolor="#e9e9e9" style="line-height:14px;font-size:2px;">&nbsp;</td>
+              </tr></table>
+            </td>
+          </tr>
+          <tr>
+            <td></td>
+            <td style="font-family:monospace;font-size:11px;color:#777;padding:1px 0 2px;">{stats}</td>
+          </tr>"""
+
+    legend = " &nbsp;".join(
+        f'<span style="color:{color};">■</span> {effort}' for effort, color in _EFFORT_COLORS
+    )
+    trend_html = ""
+    if trend:
+        trend_html = "<br>" + html.escape(trend).replace("\n", "<br>")
+    return f"""
+      <div style="margin-bottom:18px;padding:14px 16px;background:#f5f5f5;border-left:4px solid #555;border-radius:4px;font-family:monospace;font-size:13px;line-height:1.5;">
+        <strong>3-WEEK TRAINING PATTERN</strong>
+        <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:6px;">{bar_rows}
+        </table>
+        <div style="font-size:11px;color:#555;margin-top:6px;">{legend}</div>
+        {trend_html}
+      </div>"""
+
+
 def render_html(session: dict) -> str:
     day = session.get("day", "").title()
     deload = " · DELOAD WEEK" if session.get("deload") else ""
     variants = _variants(session)
     web_url = os.environ.get("WEB_URL", "").rstrip("/")
+    pattern_analysis = session.get("pattern_analysis", "").strip()
+    recovery = session.get("recovery", "").strip()
+    trend = session.get("trend_analysis", "").strip()
+    pattern_weeks = session.get("pattern_weeks") or []
+    pattern_trend = session.get("pattern_trend", "").strip()
 
     sections = ""
     for label, workout in variants:
@@ -97,8 +182,24 @@ def render_html(session: dict) -> str:
             </p>
           </div>"""
 
+    trend_section = ""
+    if trend:
+        escaped_trend = html.escape(trend).replace("\n", "<br>")
+        trend_section = f"""
+      <div style="margin-bottom:18px;padding:14px 16px;background:#f0f7f0;border-left:4px solid #1a5;border-radius:4px;font-size:14px;line-height:1.55;">
+        <strong>COACH'S TREND READ</strong><br>
+        {escaped_trend}
+      </div>"""
+
+    recovery_section = _context_box("RECOVERY (GARMIN)", recovery) if recovery else ""
+    # Graph when structured week data exists; text box for legacy sessions.
+    pattern_section = _pattern_graph(pattern_weeks, pattern_trend)
+    if not pattern_section and pattern_analysis:
+        pattern_section = _context_box("3-WEEK PATTERN ANALYSIS", pattern_analysis)
+
     return f"""<html><body style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#222;">
       <h2 style="margin-bottom:0;">{day} Strength{deload}</h2>
+      {trend_section}{recovery_section}{pattern_section}
       {compare_hint}
       {sections}
       {feedback_cta}

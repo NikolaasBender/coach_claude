@@ -18,10 +18,9 @@ All configuration lives in `.env` at the project root. Copy `.env.example` to `.
 | Variable | Example | Description |
 |----------|---------|-------------|
 | `WEB_URL` | `http://orangepi.local:8080` | Public URL of feedback web app. Included in workout emails as "Log Feedback" link. |
-| `STRAVA_CLIENT_ID` | `123456` | Strava app Client ID from strava.com/settings/api. |
-| `STRAVA_CLIENT_SECRET` | `abcdef...` | Strava app Client Secret. |
-| `STRAVA_REFRESH_TOKEN` | `xyz...` | From one-time OAuth (`python -m src.setup_strava`). Enables training load context. |
-| `STRAVA_DB_PATH` | `/data/strava.db` | Path to Strava SQLite database (mounted volume in Docker). |
+| `GARMIN_EMAIL` | `you@example.com` | Optional — prefills the one-time Garmin login (`python -m src.setup_garmin`). |
+| `GARMIN_TOKENS_PATH` | `/data/garmin_tokens` | Where Garmin OAuth tokens are saved (mounted volume in Docker). Tokens last ~1 year; your password is never stored. |
+| `GARMIN_DB_PATH` | `/data/garmin.db` | Path to Garmin SQLite database (mounted volume in Docker). |
 
 ### Optional
 
@@ -171,28 +170,65 @@ All exercises pre-vetted against exclusions. Pools:
 2. **Mandatory hip bridge** (rotating variant from `HIP_BRIDGES`)
 3. **Dedicated lower-core movement** (from `LOWER_CORE`)
 
-## Strava 3-Week Pattern Analysis (`src/strava.py`)
+## Garmin Training Load, Pattern Analysis & Recovery (`src/garmin.py`)
 
-The system now fetches 21 days of Strava activities, persists them to a SQLite database (`data/strava.db`), and builds a 3-week pattern analysis that appears at the top of every workout email.
+The system fetches 21 days of Garmin Connect activities plus 7 days of daily wellness data, persists both to a SQLite database (`data/garmin.db`), and builds a 3-week pattern analysis and a recovery snapshot that appear at the top of every workout email.
+
+Authentication is a one-time interactive login (`python -m src.setup_garmin` — MFA supported); scheduled runs resume from OAuth tokens saved to `GARMIN_TOKENS_PATH`. No client ID/secret or app registration needed.
 
 ### Database Schema
 
-Table `activities` (keyed by Strava activity ID):
+Table `activities` (keyed by Garmin activity ID):
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | INTEGER PRIMARY KEY | Auto-increment |
-| `strava_id` | INTEGER UNIQUE NOT NULL | Strava activity ID |
+| `garmin_id` | INTEGER UNIQUE NOT NULL | Garmin activity ID |
 | `name` | TEXT | Activity name |
-| `sport_type` | TEXT | e.g., "Ride", "GravelRide" |
-| `start_date` | TEXT | ISO 8601 timestamp |
+| `sport_type` | TEXT | Garmin typeKey, e.g. "cycling", "gravel_cycling", "strength_training" |
+| `start_date` | TEXT | ISO 8601 UTC timestamp |
 | `moving_time` | INTEGER | Seconds |
 | `distance` | REAL | Meters |
 | `total_elevation_gain` | REAL | Meters |
-| `suffer_score` | INTEGER | Strava relative effort |
+| `aerobic_te` | REAL | Garmin aerobic Training Effect (0.0–5.0) |
+| `training_load` | REAL | Garmin activity training load |
+| `avg_hr` | REAL | Average heart rate |
 | `raw_json` | TEXT | Full activity JSON for future use |
 | `created_at` | TEXT | Auto timestamp |
 
 Index on `start_date` for fast time-range queries.
+
+Table `wellness` (one row per local calendar date; upserts use `COALESCE`, so a later sparse sync never erases earlier data):
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PRIMARY KEY | Auto-increment |
+| `date` | TEXT UNIQUE NOT NULL | Local calendar date |
+| `sleep_seconds` | INTEGER | Sleep duration in seconds |
+| `sleep_score` | REAL | Garmin sleep score (0–100) |
+| `sleep_quality` | TEXT | Garmin qualifier key (e.g. "GOOD") |
+| `avg_stress` | REAL | Average stress (0–100) |
+| `max_stress` | REAL | Max stress |
+| `resting_hr` | REAL | Resting heart rate |
+| `body_battery_high` | REAL | Body battery daily high |
+| `body_battery_low` | REAL | Body battery daily low |
+| `hrv_last_night` | REAL | Last-night average HRV (ms) |
+| `hrv_status` | TEXT | HRV status (e.g. "BALANCED") |
+| `steps` | INTEGER | Total daily steps |
+| `created_at` | TEXT | Auto timestamp |
+
+Garmin's 0/-1 "no data" sentinels are collapsed to NULL before storage.
+
+### Effort Classification
+
+Activities are classified by Garmin aerobic Training Effect (0.0–5.0):
+
+| Effort | Threshold |
+|--------|-----------|
+| `very hard` | TE ≥ 4.0 |
+| `hard` | TE ≥ 3.0 |
+| `moderate` | TE ≥ 2.0 |
+| `easy` | TE < 2.0 |
+
+When TE is absent (e.g. manual entries), a moving-time heuristic applies: ≥ 3h very hard, ≥ 2h hard, ≥ 1h moderate, else easy.
 
 ### Pattern Analysis Output
 
@@ -200,20 +236,26 @@ The `_analyze_3week_pattern()` function produces:
 
 ```
 3-WEEK TRAINING PATTERN ANALYSIS:
-  Week 2025-W01: 4 rides, 8.5h, 250km, 3200m elev (+1.2h ↑)
+  Week 2025-W01: 4 activities, 8.5h, 250km, 3200m elev (+1.2h ↑)
     Effort: 1E 2M 1H 0VH
     Days: Mon:1, Wed:1, Sat:1, Sun:1
-  Week 2025-W02: 3 rides, 7.3h, 210km, 2800m elev (-1.2h ↓)
+  Week 2025-W02: 3 activities, 7.3h, 210km, 2800m elev (-1.2h ↓)
     Effort: 2E 1M 0H 0VH
     Days: Tue:1, Fri:1, Sun:1
-  Week 2025-W03: 5 rides, 9.8h, 300km, 3500m elev (+2.5h ↑)
+  Week 2025-W03: 5 activities, 9.8h, 300km, 3500m elev (+2.5h ↑)
     Effort: 1E 3M 1H 0VH
     Days: Mon:1, Wed:1, Thu:1, Sat:1, Sun:1
   → Trend: Volume increasing (+1.3h over 3 weeks)
   → Weekend: 5.2h vs Weekday: 4.6h
 ```
 
-This analysis is injected into the LLM prompt via `strava.load_context()` → `pattern_analysis` field, and rendered at the top of the workout email.
+This text is injected into the LLM prompt via `garmin.load_context()` → `pattern_analysis`. The email instead renders the same data (`pattern_weeks` + `pattern_trend`) as an effort-colored weekly volume graph with the `→ Trend:`/`→ Weekend:` lines kept beneath it.
+
+### Recovery Snapshot
+
+`_recovery_summary()` builds a snapshot from the stored wellness rows — most recent value per metric against 7-day averages: last-night sleep (hours + score + quality), stress for the most recent full day, body battery high/low, resting HR, HRV, and 7-day average daily steps.
+
+It reaches the workout via `garmin.load_context()` → `recovery`: injected into the LLM prompt as a "CURRENT RECOVERY STATE" section (telling the model to trim volume on poor sleep/high stress/low body battery/unbalanced HRV) and rendered in the email's "RECOVERY (GARMIN)" box above the pattern graph. Empty when no wellness data is stored.
 
 ## Docker Compose Overrides
 

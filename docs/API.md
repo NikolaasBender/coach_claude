@@ -19,11 +19,12 @@ Returns workout dict with `model`, `workout`, `focus`, `coach_notes`.
 Full orchestration:
 1. `day = target_day()`
 2. `deload = (history.weeks_since_deload() >= DELOAD_EVERY)`
-3. `strava_ctx = strava.load_context()` → includes `pattern_analysis`
-4. `ctx = { history, load_summary, strava, feedback, hip_bridge }`
-5. Call Nemotron via `build_variant()` (single provider)
-6. `email_send.send(session)` with `pattern_analysis` at top
-7. `history.append(session)`
+3. `garmin_ctx = garmin.load_context()` → includes `pattern_analysis`, `pattern_weeks`/`pattern_trend`, `recovery`
+4. `ctx = { recent, load_summary, feedback, garmin, bridge, session_index }`
+5. `trend = llm.trend_analysis(providers[0], ctx, day, deload)` — LLM trend read (best-effort, "" on failure)
+6. Call Nemotron via `build_variant()` (single provider)
+7. `email_send.send(session)` with `trend_analysis` + `recovery` + pattern volume graph at top
+8. `history.append(session)`
 
 ### `PROVIDERS: list[dict]`
 Registry of provider configs. Each:
@@ -39,18 +40,30 @@ Registry of provider configs. Each:
 ### `active_providers() -> list[dict]`
 Returns providers with non-empty API key in environment.
 
-### `_build_user_prompt(day, deload, history, strava, load_summary, feedback, hip_bridge) -> str`
+### `TREND_SYSTEM: str`
+System prompt for the trend read: 3-5 grounded plain-text lines plus a closing `Today: ...` line; interprets the data instead of repeating it.
+
+### `trend_analysis(provider, ctx, day="", deload=False) -> str`
+Writes the short "coach's trend read" narrative that opens the email:
+1. Assembles available context: Garmin `pattern_analysis`, 7-day `summary`, `recovery`, strength `load_summary`, athlete `feedback`, today's day/deload
+2. Calls the provider with `TREND_SYSTEM` (no JSON — plain text)
+3. Strips a leaked `<think>...</think>` block if present
+
+Best-effort: returns `""` on any failure or when no context exists, so the email always sends.
+
+### `_build_user_prompt(day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None) -> str`
 Builds the full user prompt injected into every LLM call. Includes:
 - Athlete profile + shoulder constraints
 - Equipment list
 - Day focus
 - Multi-week load summary
-- Strava 7-day summary + yesterday detail
+- Garmin 7-day training load summary + yesterday detail
+- Current recovery state (sleep, stress, body battery, HRV) — omitted when empty
 - Recent athlete feedback
 - Mandatory hip bridge variant for today
 - `PROMPT_CONSTRAINTS` from exclusions
 
-### `generate(provider, day, deload, history, strava, load_summary, feedback, hip_bridge, extra_note=None) -> dict`
+### `generate(provider, day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None, extra_note=None) -> dict`
 Calls one provider's OpenAI-compatible endpoint:
 1. Creates `OpenAI` client with provider's `base_url` + API key
 2. Sends `SYSTEM` + user prompt
@@ -186,59 +199,125 @@ Returns "No athlete feedback logged yet." if empty.
 
 ---
 
-## `src/strava.py` — Strava Training Load Context & 3-Week Pattern Analysis
+## `src/garmin.py` — Garmin Training Load Context, 3-Week Pattern Analysis & Recovery
 
 ### `load_context(session_date=None) -> dict`
-Returns `{"summary": str, "yesterday_note": str | None, "pattern_analysis": str}` for LLM prompt and email.
+Returns `{"summary": str, "yesterday_note": str, "pattern_analysis": str, "pattern_weeks": list, "pattern_trend": str, "recovery": str}` for LLM prompt and email.
 
 **Flow:**
-1. `_refresh_access_token()` — exchanges `STRAVA_REFRESH_TOKEN` for fresh access token
-2. `_fetch_3weeks(access_token)` — paginated fetch of last 21 days of activities
-3. `_upsert_activities(activities)` — idempotent upsert to SQLite (`data/strava.db`) by Strava activity ID
-4. Filter last 7 days for summary/yesterday
-5. `_summarize(activities_7d)` — builds human-readable 7-day summary
-6. `_yesterday_note(activities_7d, session_date)` — specific note on day-before ride
-7. `_analyze_3week_pattern()` — builds 3-week pattern analysis from stored DB data
+1. `_token_file()` check — missing tokens → `"Garmin not configured — skipping training load context."`
+2. `Garmin().login(_tokens_store())` — resumes saved OAuth tokens; login failure → `"Garmin unavailable (...)"`
+3. `_fetch_3weeks(client)` — fetch + normalize last 21 days of activities
+4. `_upsert_activities(activities)` — idempotent upsert to SQLite (`data/garmin.db`) by Garmin activity ID
+5. Filter last 7 days for summary/yesterday
+6. `_summarize(activities_7d)` — builds human-readable 7-day summary
+7. `_yesterday_note(activities_7d, session_date)` — specific note on day-before activity
+8. `_pattern_data()` — structured 3-week rollup → `pattern_weeks` + `pattern_trend` (email graph) and `_analyze_3week_pattern(data)` → `pattern_analysis` text (LLM prompt)
+9. `_fetch_wellness(client)` + `_upsert_wellness(rows)` — last 7 days of wellness (sleep, stress, body battery, HRV)
+10. `_recovery_summary(session_date)` — recovery snapshot from stored wellness
 
-### `_fetch_3weeks(access_token) -> list[dict]`
-Fetches activities for last 21 days with pagination (100 per page). Returns full activity list.
+Each part degrades independently to placeholder/empty strings — a Garmin outage never blocks a workout.
+
+### `_tokens_store() -> str`
+Token store path handed to garminconnect: `GARMIN_TOKENS_PATH` env or default `data/garmin_tokens`.
+
+### `_token_file() -> Path`
+Resolves the actual token file (mirrors garminconnect's own logic): the path itself when it ends in `.json`, else `garmin_tokens.json` inside it.
+
+### `_dt(iso: str) -> datetime`
+Parses stored ISO-8601 timestamps (defensive about `Z` suffixes).
+
+### `_init_db()`
+Creates the `activities` and `wellness` tables (plus the `idx_activities_start_date` index) if missing.
+
+### `_parse_start(a: dict) -> str | None`
+Normalizes Garmin's `YYYY-MM-DD HH:MM:SS` GMT stamp (`startTimeGMT`, falling back to `startTimeLocal`) to ISO 8601 UTC.
+
+### `_normalize(a: dict) -> dict | None`
+Flattens one raw Garmin activity into the storage/analysis shape (matches DB columns 1:1). Pulls `activityId`, `activityName`, `activityType.typeKey`, `movingDuration`/`duration`, `distance`, `elevationGain`, `aerobicTrainingEffect`, `activityTrainingLoad`, `averageHR`. Returns `None` without an ID or start time; absent metrics degrade to 0/None rather than raising.
 
 ### `_upsert_activities(activities: list[dict]) -> int`
-Upserts activities by `strava_id` (INSERT ... ON CONFLICT). Returns count of new/updated rows.
+Upserts normalized activities by `garmin_id` (INSERT ... ON CONFLICT). Returns count of rows touched.
 
-### `_analyze_3week_pattern() -> str`
-Analyzes last 3 weeks of stored activities and returns pattern summary including:
-- Weekly breakdown: rides, hours, distance, elevation, effort distribution (E/M/H/VH), day-of-week pattern
+### `_fetch_3weeks(client) -> list[dict]`
+Fetches activities for the last 21 days via `get_activities_by_date` (the garminconnect lib paginates). Returns normalized activity list.
+
+### `_classify_effort(activity) -> str`
+Classifies by Garmin aerobic Training Effect (0.0–5.0 scale):
+- `very hard` ≥ 4.0
+- `hard` ≥ 3.0
+- `moderate` ≥ 2.0
+- `easy` < 2.0
+
+Fallback when TE is absent (e.g. manual entries) is a moving-time heuristic: ≥ 3h very hard, ≥ 2h hard, ≥ 1h moderate, else easy.
+
+### `_summarize(activities) -> str`
+Per-activity lines (sport, hours, km, elevation, TE, effort class) plus week totals: training hours and elevation gain.
+
+### `_yesterday_note(activities, session_date) -> str`
+Plain-English note on the day-before's training: hours, hardest effort, and a volume cue for today's session.
+
+### `_pattern_data() -> dict`
+Structured 3-week rollup from stored activities: `{"weeks": [...], "trend_lines": [...]}`. Each week: `week`, `count`, `hours`, `km`, `elev`, `effort_counts`, `effort_hours`, `days`, `delta`. Single source of truth for the prompt text and the email graph.
+
+### `_analyze_3week_pattern(data=None) -> str`
+Renders `_pattern_data()` as the text block used in the LLM prompt, including:
+- Weekly breakdown: activities, hours, distance, elevation, effort distribution (E/M/H/VH), day-of-week pattern
 - Trend detection: volume increasing/decreasing/stable over 3 weeks
 - Weekend vs weekday split
 
-### `_classify_effort(activity) -> str`
-Classifies ride by suffer score:
-- `very hard` > 150
-- `hard` > 100
-- `moderate` > 50
-- `easy` ≤ 50
+### `_pos(v)`
+Collapses Garmin's 0/-1/-2 "no data" sentinels to `None`.
 
-### `_summarize(activities) -> str`
-Aggregates: ride count, total suffer score, avg suffer, hardest ride, distribution.
+### `_extract_wellness_day(date_str, summary, sleep, hrv) -> dict`
+Flattens one day's wellness payloads into a wellness-table row: `dailySleepDTO.sleepTimeSeconds`, `sleepScores.overall.value`/`qualifierKey`, `averageStressLevel`/`maxStressLevel`, `restingHeartRate`, `bodyBatteryHighestValue`/`bodyBatteryLowestValue`, `hrvSummary.lastNightAvg`/`status`, `totalSteps`. Everything is optional — non-synced days yield `None` columns.
+
+### `_fetch_wellness(client, days=7) -> list[dict]`
+Per-day wellness for the last 7 days (today inclusive, local calendar dates). Three calls per day — `get_user_summary(d)`, `get_sleep_data(d)`, `get_hrv_data(d)` — each fails independently; days with no data at all are skipped.
+
+### `_upsert_wellness(rows: list[dict]) -> int`
+Upserts wellness rows by calendar `date` with `COALESCE` updates, so a later sparse fetch (e.g. pre-sync 5am run) never erases an earlier metric.
+
+### `_recovery_summary(session_date=None) -> str`
+Recovery snapshot from stored wellness — most recent value per metric vs 7-day averages: last-night sleep (hours + score + quality), stress for the most recent full day, body battery high/low, resting HR, HRV (ms + status), 7-day avg daily steps. Returns `""` when the wellness table has nothing recent.
 
 ### Database Schema
-Table `activities` (keyed by Strava activity ID):
+Table `activities` (keyed by Garmin activity ID):
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | INTEGER PRIMARY KEY | Auto-increment |
-| `strava_id` | INTEGER UNIQUE NOT NULL | Strava activity ID |
+| `garmin_id` | INTEGER UNIQUE NOT NULL | Garmin activity ID |
 | `name` | TEXT | Activity name |
-| `sport_type` | TEXT | e.g., "Ride", "GravelRide" |
-| `start_date` | TEXT | ISO 8601 timestamp |
+| `sport_type` | TEXT | Garmin typeKey, e.g. "cycling", "gravel_cycling", "strength_training" |
+| `start_date` | TEXT | ISO 8601 UTC timestamp |
 | `moving_time` | INTEGER | Seconds |
 | `distance` | REAL | Meters |
 | `total_elevation_gain` | REAL | Meters |
-| `suffer_score` | INTEGER | Strava relative effort |
+| `aerobic_te` | REAL | Garmin aerobic Training Effect (0.0–5.0) |
+| `training_load` | REAL | Garmin activity training load |
+| `avg_hr` | REAL | Average heart rate |
 | `raw_json` | TEXT | Full activity JSON for future use |
 | `created_at` | TEXT | Auto timestamp |
 
 Index on `start_date` for fast time-range queries.
+
+Table `wellness` (one row per local calendar date):
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER PRIMARY KEY | Auto-increment |
+| `date` | TEXT UNIQUE NOT NULL | Local calendar date |
+| `sleep_seconds` | INTEGER | Sleep duration in seconds |
+| `sleep_score` | REAL | Garmin sleep score (0–100) |
+| `sleep_quality` | TEXT | Garmin qualifier key (e.g. "GOOD") |
+| `avg_stress` | REAL | Average stress (0–100) |
+| `max_stress` | REAL | Max stress |
+| `resting_hr` | REAL | Resting heart rate |
+| `body_battery_high` | REAL | Body battery daily high |
+| `body_battery_low` | REAL | Body battery daily low |
+| `hrv_last_night` | REAL | Last-night average HRV (ms) |
+| `hrv_status` | TEXT | HRV status (e.g. "BALANCED") |
+| `steps` | INTEGER | Total daily steps |
+| `created_at` | TEXT | Auto timestamp |
 ---
 
 ## `src/profile.py` — Athlete Profile
@@ -301,9 +380,15 @@ Normalizes session to `[(model_label, workout_dict), ...]`.
 ### `_table(workout: dict) -> str`
 Renders workout blocks as HTML tables with exercise links.
 
+### `_context_box(title: str, text: str) -> str`
+Module-level helper: renders a monospace context block (recovery snapshot; legacy text fallback for the pattern) with `html.escape`d text.
+
+### `_pattern_graph(weeks: list, trend: str) -> str`
+Email-safe 3-week volume graph: table-based stacked bars (inline styles only — no JS/images, survives Gmail). Bar length ∝ weekly hours scaled to the biggest week; segments colored by effort-hours share (easy→very hard); stats line per week; effort legend; the `→ Trend:`/`→ Weekend:` lines kept below. Returns `""` for empty weeks.
+
 ### `render_html(session: dict) -> str`
 Full HTML email with:
-- **3-week pattern analysis at top** (from `session.pattern_analysis`)
+- **Coach's trend read box** (LLM narrative from `session.trend_analysis`, green accent), then **Recovery (Garmin) box** (from `session.recovery`, via `_context_box`), then the **3-week volume graph** (from `session.pattern_weeks` + `session.pattern_trend`, via `_pattern_graph`; falls back to the `_context_box` text block for legacy sessions with only `pattern_analysis`)
 - Day + deload banner
 - Variant table (single Nemotron proposal)
 - Coach notes per variant
@@ -330,17 +415,16 @@ Returns YouTube URL:
 
 ---
 
-## `src/setup_strava.py` — One-Time OAuth
+## `src/setup_garmin.py` — One-Time Garmin Login
 
 ### `main() -> None`
 Interactive CLI:
-1. Reads `STRAVA_CLIENT_ID` + `STRAVA_CLIENT_SECRET` from env
-2. Opens browser to Strava authorization URL
-3. Prompts for redirect URL with `code=`
-4. Exchanges code for `refresh_token` + `access_token`
-5. Prints `STRAVA_REFRESH_TOKEN=...` for `.env`
+1. Reads `GARMIN_EMAIL` from env to prefill the login email (prompts if unset)
+2. Prompts for password (never stored) and MFA code
+3. `Garmin(email, password, prompt_mfa=...).login(tokens)` — OAuth tokens (valid ~1 year) auto-saved to `GARMIN_TOKENS_PATH`
+4. Sanity check: fetches last-7-days activities, prints count + token path
 
-**Usage:** `python -m src.setup_strava`
+**Usage:** `python -m src.setup_garmin`
 
 ---
 
@@ -349,19 +433,21 @@ Interactive CLI:
 ### Session Entry (`history.json`)
 ```json
 {
-  "date": "2025-01-15",
   "day": "monday",
   "deload": false,
+  "date": "2025-01-15",
+  "source": "llm",
   "variants": [
     {
       "model": "Nemotron",
-      "workout": { "blocks": [...], "focus": "...", "coach_notes": "..." },
-      "source": "llm"
+      "workout": { "blocks": [...], "focus": "...", "coach_notes": "..." }
     }
   ],
-  "pattern_analysis": "3-WEEK TRAINING PATTERN ANALYSIS:\n  Week 2025-W01: 4 rides, 8.5h, 250km, 3200m elev (+1.2h ↑)\n    Effort: 1E 2M 1H 0VH\n    Days: Mon:1, Wed:1, Sat:1, Sun:1\n  ...",
-  "strava_summary": "...",
-  "feedback_summary": "..."
+  "pattern_analysis": "3-WEEK TRAINING PATTERN ANALYSIS:\n  Week 2025-W01: 4 activities, 8.5h, 250km, 3200m elev (+1.2h ↑)\n    Effort: 1E 2M 1H 0VH\n    Days: Mon:1, Wed:1, Sat:1, Sun:1\n  ...",
+  "pattern_weeks": [{"week": "2025-W01", "count": 4, "hours": 8.5, "km": 250, "elev": 3200, "effort_counts": {"easy": 1, "moderate": 2, "hard": 1, "very hard": 0}, "effort_hours": {"easy": 1.5, "moderate": 4.0, "hard": 3.0, "very hard": 0.0}, "days": "Mon:1, Sat:1, Sun:1, Wed:1", "delta": " (+1.2h ↑)"}],
+  "pattern_trend": "→ Trend: Volume stable (+0.3h over 3 weeks)\n→ Weekend: 9.1h vs Weekday: 7.2h",
+  "recovery": "  Sleep last night: 7.4h, score 82 GOOD — 7-day avg 7.1h, score 78\n  Stress (Tue 14 Jan): avg 28/100, max 71 — 7-day avg 31\n  ...",
+  "trend_analysis": "- Volume stable around 8h/week with weekend-loaded rides\n- Recovery solid: sleep and HRV at baseline\nToday: keep planned intensity, progress hip thrust load."
 }
 ```
 

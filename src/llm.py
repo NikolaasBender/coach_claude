@@ -2,16 +2,20 @@
 
 Each session is designed by EVERY configured provider (currently NVIDIA's
 Nemotron and DeepSeek). The models see the same brief: athlete profile, hard
-shoulder constraints, Strava load, multi-week strength-load analysis, recent
-athlete feedback, and the mandatory hip-bridge variant for the day. main.py
-validates each proposal against exclusions.py before trusting it, then the email
-shows the surviving proposals side by side for comparison.
+shoulder constraints, Garmin training load + recovery state, multi-week
+strength-load analysis, recent athlete feedback, and the mandatory hip-bridge
+variant for the day. main.py validates each proposal against exclusions.py
+before trusting it, then the email shows the surviving proposals side by side.
+
+This module also writes the short "coach's trend read" narrative that opens
+the email (trend_analysis) — best-effort, never blocking.
 
 This module never gets the final say on safety.
 """
 
 import json
 import os
+import sys
 
 from openai import OpenAI
 
@@ -28,19 +32,6 @@ PROVIDERS = [
         "base_url": os.environ.get("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"),
         "model": os.environ.get("NVIDIA_MODEL", "nvidia/nemotron-3-ultra-550b-a55b"),
         "create_kwargs": {"temperature": 0.8, "top_p": 0.95},
-    },
-    {
-        "name": "deepseek",
-        "label": "DeepSeek",
-        "key_env": "DEEPSEEK_API_KEY",
-        "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-pro"),
-        # deepseek-v4-pro is a reasoning model: enable extended thinking.
-        "create_kwargs": {
-            "temperature": 0.8,
-            "reasoning_effort": "high",
-            "extra_body": {"thinking": {"type": "enabled"}},
-        },
     },
 ]
 
@@ -71,21 +62,90 @@ def active_providers():
     return [p for p in PROVIDERS if os.environ.get(p["key_env"])]
 
 
-def _build_user_prompt(day, deload, history, strava=None, load_summary="",
+TREND_SYSTEM = """You are the same strength coach reviewing an advanced
+cyclist's recent training before writing today's session. Produce a SHORT
+plain-text trend read for the top of the workout email.
+
+Rules:
+- 3 to 5 lines, each starting with "- ", max ~120 words total.
+- Ground every line in the data given: riding volume/intensity trajectory,
+  strength-session consistency, recovery/sleep/stress state.
+- Finish with one extra line starting "Today: " — what the trend implies
+  for this session.
+- No markdown headers, no JSON, no preamble. Interpret the numbers, don't
+  just repeat them."""
+
+
+def trend_analysis(provider, ctx, day="", deload=False):
+    """One short LLM narrative about multi-week training trends for the email.
+
+    Best-effort: returns "" on any failure or when there is no data worth
+    analyzing, so the email always sends.
+    """
+    try:
+        garmin = ctx.get("garmin") or {}
+        parts = []
+        if garmin.get("pattern_analysis"):
+            parts.append(garmin["pattern_analysis"])
+        if garmin.get("summary"):
+            parts.append("LAST 7 DAYS OF TRAINING:\n" + garmin["summary"])
+        if garmin.get("recovery"):
+            parts.append("CURRENT RECOVERY SNAPSHOT:\n" + garmin["recovery"])
+        if ctx.get("load_summary"):
+            parts.append("STRENGTH-LOAD ANALYSIS (gym sessions):\n" + ctx["load_summary"])
+        if ctx.get("feedback"):
+            parts.append(ctx["feedback"])
+        if not parts:
+            return ""
+        if day:
+            parts.append(f"TODAY'S SESSION: {day}, deload={bool(deload)}")
+
+        client = OpenAI(base_url=provider["base_url"],
+                        api_key=os.environ[provider["key_env"]])
+        resp = client.chat.completions.create(
+            model=provider["model"],
+            messages=[
+                {"role": "system", "content": TREND_SYSTEM},
+                {"role": "user", "content": "\n\n".join(parts) + "\n\nWrite the trend read now."},
+            ],
+            max_tokens=4096,
+        )
+        text = (resp.choices[0].message.content or "").strip()
+        # Some reasoning models leak a think-block into content; drop it.
+        if text.startswith("<think>") and "</think>" in text:
+            text = text.split("</think>", 1)[1].strip()
+        return text
+    except Exception as e:
+        print(f"[llm:trend] failed ({e}) — sending email without trend read", file=sys.stderr)
+        return ""
+
+
+def _build_user_prompt(day, deload, history, garmin=None, load_summary="",
                        feedback="", hip_bridge=None):
     equip = "\n".join(f"- {e}" for e in P.EQUIPMENT)
     equip += f"\n\nNOTE: {P.EQUIPMENT_NOTES}"
     hist = json.dumps(history, indent=2) if history else "none yet (first session)"
 
-    strava_section = ""
-    if strava:
-        summary = strava.get("summary", "")
-        yesterday = strava.get("yesterday_note", "")
-        strava_section = f"""
-RECENT TRAINING LOAD (last 7 days from Strava — use this to calibrate intensity):
+    garmin_section = ""
+    if garmin:
+        summary = garmin.get("summary", "")
+        yesterday = garmin.get("yesterday_note", "")
+        garmin_section = f"""
+RECENT TRAINING LOAD (last 7 days from Garmin — use this to calibrate intensity):
 {summary}
 
 DAY-BEFORE NOTE: {yesterday}
+"""
+
+    recovery = garmin.get("recovery", "") if garmin else ""
+    recovery_section = ""
+    if recovery:
+        recovery_section = f"""
+CURRENT RECOVERY STATE (Garmin wearable — sleep, stress, body battery, HRV):
+{recovery}
+Use this to modulate today's session: short/poor sleep, elevated stress, low
+body battery, or unbalanced HRV -> trim volume/intensity and bias toward
+technique, mobility, and core; fully recovered -> allow planned progression.
 """
 
     load_section = f"\nSTRENGTH-LOAD ANALYSIS (recent weeks):\n{load_summary}\n" if load_summary else ""
@@ -112,7 +172,7 @@ EQUIPMENT AVAILABLE (use only these):
 {equip}
 
 DELOAD THIS SESSION: {deload}. If true, cut volume/intensity ~40%.
-{strava_section}{load_section}{feedback_section}{bridge_line}
+{garmin_section}{recovery_section}{load_section}{feedback_section}{bridge_line}
 REQUIRED CONTENT EVERY SESSION:
 - The mandatory hip bridge variant named above (in Main).
 - At least one dedicated LOWER-CORE movement (e.g. lying/hanging leg raise,
@@ -144,7 +204,7 @@ def _extract_json(text: str):
     raise ValueError("unbalanced JSON in model output")
 
 
-def generate(provider, day, deload, history, strava=None, load_summary="",
+def generate(provider, day, deload, history, garmin=None, load_summary="",
              feedback="", hip_bridge=None, extra_note=None):
     """Call one provider's LLM and return a parsed workout dict.
 
@@ -155,7 +215,7 @@ def generate(provider, day, deload, history, strava=None, load_summary="",
     client = OpenAI(base_url=provider["base_url"], api_key=api_key)
 
     user = _build_user_prompt(
-        day, deload, history, strava=strava,
+        day, deload, history, garmin=garmin,
         load_summary=load_summary, feedback=feedback, hip_bridge=hip_bridge,
     )
     if extra_note:

@@ -48,13 +48,13 @@ coach_claude/
 │   ├── templates.py        # Safe fallback workouts
 │   ├── history.py          # Persistent session log
 │   ├── feedback.py         # Athlete feedback log
-│   ├── strava.py           # Strava training load context
+│   ├── garmin.py           # Garmin training load + recovery context
 │   ├── profile.py          # Athlete profile & equipment
 │   ├── web.py              # Flask feedback web app
 │   ├── email_send.py       # HTML email + Gmail SMTP
 │   ├── exercise_links.py   # Exercise → YouTube URLs
-│   └── setup_strava.py     # One-time Strava OAuth
-├── data/                   # Mounted volume (history.json, feedback.json)
+│   └── setup_garmin.py     # One-time Garmin Connect login
+├── data/                   # Mounted volume (history.json, feedback.json, garmin.db, garmin_tokens)
 ├── .env                    # Your config (NOT committed)
 ├── .env.example            # Template
 ├── Dockerfile
@@ -72,7 +72,7 @@ coach_claude/
 
 3. **Feedback Loop**: Athlete logs rating (1-5), preferred model, and notes via web app. This feeds directly into the next prompt.
 
-4. **Training Load Awareness**: Strava ride data (last 7 days) informs workout intensity — hard Sunday ride softens Monday leg day.
+4. **Training Load & Recovery Awareness**: Garmin activity data (last 7 days) plus wearable recovery data (sleep, stress, body battery, HRV) inform workout intensity — hard Sunday ride or a rough night's sleep softens Monday leg day.
 
 5. **Mandatory Structure**: Every session includes shoulder rehab block, rotating hip bridge variant (SL → weighted → BW), and dedicated lower-core movement.
 

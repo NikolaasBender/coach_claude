@@ -60,7 +60,7 @@ docker compose run --rm coach -e DELOAD_EVERY=1 python -m src.main monday
 # Run with debug to see what goes to the model
 docker compose run --rm coach python -c "
 from src.llm import _build_user_prompt
-from src import history, strava, feedback, templates
+from src import history, garmin, feedback, templates
 from src.profile import SCHEDULE
 
 ctx = {
@@ -68,7 +68,7 @@ ctx = {
     'deload': False,
     'history': history.recent(4),
     'load_summary': history.load_summary(8),
-    'strava': strava.load_context(),
+    'garmin': garmin.load_context(),
     'feedback': feedback.summary(6),
     'hip_bridge': templates.hip_bridge(history.count()),
 }
@@ -117,10 +117,10 @@ print(json.dumps(w, indent=2))
 "
 ```
 
-### Test Strava Context
+### Test Garmin Context
 ```bash
 docker compose run --rm --entrypoint "" coach python -c "
-from src.strava import load_context
+from src.garmin import load_context
 import json
 ctx = load_context()
 print('=== SUMMARY (7 days) ===')
@@ -128,6 +128,9 @@ print(ctx['summary'])
 print()
 print('=== PATTERN ANALYSIS (3 weeks) ===')
 print(ctx['pattern_analysis'])
+print()
+print('=== RECOVERY (wellness) ===')
+print(ctx['recovery'])
 "
 ```
 
@@ -179,36 +182,36 @@ PROVIDERS = [
 Add API key to `.env`, rebuild: `docker compose up -d --build`
 
 
-### Inspect Strava 3-Week Pattern Analysis
+### Inspect Garmin 3-Week Pattern Analysis
 ```bash
 # View pattern analysis from DB
 docker compose run --rm --entrypoint "" coach python -c "
-from src.strava import load_context
+from src.garmin import load_context
 ctx = load_context()
 print('=== PATTERN ANALYSIS ===')
 print(ctx['pattern_analysis'])
 "
 ```
 
-### View Strava Database
+### View Garmin Database
 ```bash
 # Check activities in DB
 docker compose run --rm --entrypoint "" coach python -c "
 import sqlite3
-conn = sqlite3.connect('/data/strava.db')
+conn = sqlite3.connect('/data/garmin.db')
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 cur.execute('SELECT COUNT(*) as cnt FROM activities')
 print('Total activities:', cur.fetchone()['cnt'])
-cur.execute('SELECT strava_id, start_date, moving_time/3600.0 as hours, suffer_score FROM activities ORDER BY start_date DESC LIMIT 10')
+cur.execute('SELECT garmin_id, start_date, moving_time/3600.0 as hours, aerobic_te FROM activities ORDER BY start_date DESC LIMIT 10')
 for row in cur.fetchall():
-    print(f\"  {row['strava_id']}: {row['start_date']} - {row['hours']:.2f}h - score:{row['suffer_score']}\")
+    print(f\"  {row['garmin_id']}: {row['start_date']} - {row['hours']:.2f}h - TE:{row['aerobic_te']}\")
 "
 ```
 
-### Reset Strava Database (if corrupted)
+### Reset Garmin Database (if corrupted)
 ```bash
-docker compose run --rm --entrypoint "" coach rm /data/strava.db
+docker compose run --rm --entrypoint "" coach rm /data/garmin.db
 # Next run will re-fetch 21 days and rebuild
 ```
 ### Add Exercise to Template Pools
@@ -338,11 +341,11 @@ server.quit()
 # - Less secure apps not the issue (App Password bypasses this)
 ```
 
-### Strava Token Expired
+### Garmin Tokens Expired (~1 year)
 ```bash
-# Re-run OAuth
-docker compose run --rm coach python -m src.setup_strava
-# Update .env with new STRAVA_REFRESH_TOKEN
+# Re-run the interactive login (email + password + MFA if enabled);
+# tokens land on the /data volume automatically — no .env edit needed
+docker compose run --rm coach python -m src.setup_garmin
 docker compose restart coach
 ```
 
@@ -381,7 +384,7 @@ docker compose restart coach
 | Web app | `docker compose logs web` |
 | Manual runs | Stdout of `docker compose run` |
 | Email send | Stdout (check for "sent" message) |
-| Strava errors | Stdout (check for "strava" in logs) |
+| Garmin errors | Stdout (check for "Garmin unavailable", "Garmin activities unavailable", or "[garmin] wellness unavailable") |
 
 ## Monitoring Checklist (Weekly)
 
@@ -389,6 +392,6 @@ docker compose restart coach
 - [ ] Verify email received (check spam)
 - [ ] Log feedback via web app for at least one session
 - [ ] Check `docker compose ps` — both containers `Up`
-- [ ] Verify `data/history.json`, `data/feedback.json`, and `data/strava.db` growing
+- [ ] Verify `data/history.json`, `data/feedback.json`, and `data/garmin.db` growing
 - [ ] Review any exclusion violations in logs (search for "violation")
-- [ ] Check Strava pattern analysis appears in email (top section)
+- [ ] Check Garmin recovery snapshot + pattern analysis appear in email (top section)

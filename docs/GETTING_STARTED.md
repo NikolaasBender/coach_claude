@@ -5,7 +5,7 @@
 - Docker + Docker Compose
 - Gmail account with 2FA enabled (for App Password)
 - NVIDIA API key (free from [build.nvidia.com](https://build.nvidia.com))
-- Strava account (optional but recommended for training load context)
+- Garmin Connect account (optional but recommended for training load + recovery context)
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ docker compose run --rm coach python -m src.main monday
 docker compose run --rm coach python -m src.main friday
 ```
 
-Check your email — you should receive a workout proposal with the 3-week Strava pattern analysis at the top.
+Check your email — you should receive a workout proposal with the Garmin recovery snapshot and 3-week pattern analysis at the top.
 
 ## Run Feedback Web App Locally (Without Docker)
 
@@ -60,10 +60,9 @@ python -m src.web   # serves on http://localhost:8080
 | `WEB_URL` | Yes* | Public URL of feedback app (e.g. `http://orangepi.local:8080`) |
 | `TZ` | Yes | Your IANA timezone (e.g. `America/Denver`) — **critical for 5am timing** |
 | `DELOAD_EVERY` | No | Deload every N sessions (default: 5) |
-| `STRAVA_CLIENT_ID` | No | Strava app Client ID |
-| `STRAVA_CLIENT_SECRET` | No | Strava app Client Secret |
-| `STRAVA_REFRESH_TOKEN` | No | From one-time OAuth (run `python -m src.setup_strava`) |
-| `STRAVA_DB_PATH` | No | Path to Strava SQLite DB (default: `/data/strava.db`) |
+| `GARMIN_EMAIL` | No | Optional — prefills the login email for `setup_garmin` |
+| `GARMIN_TOKENS_PATH` | No | Garmin OAuth token directory (default: `/data/garmin_tokens`) |
+| `GARMIN_DB_PATH` | No | Path to Garmin SQLite DB (default: `/data/garmin.db`) |
 | `FORCE_DAY` | No | Force `monday` or `friday` for testing (leave blank in prod) |
 | `HISTORY_PATH` | No | Default: `/data/history.json` |
 | `FEEDBACK_PATH` | No | Default: `/data/feedback.json` |
@@ -77,19 +76,20 @@ python -m src.web   # serves on http://localhost:8080
 3. Generate app password for "Mail" → "Other (custom name)" → `coach_claude`
 4. Copy the 16-char password (no spaces) to `GMAIL_APP_PASSWORD`
 
-### Strava Setup (Optional)
+### Garmin Setup (Optional)
 
-1. Register app at https://www.strava.com/settings/api
-   - App Name: `coach_claude`
-   - Website: `http://localhost`
-   - Authorization Callback Domain: `localhost`
-2. Copy Client ID + Client Secret to `.env`
-3. Run one-time OAuth:
+No app registration, no client ID/secret, nothing to paste into `.env`. Just log
+in once with your Garmin Connect account:
+
+1. Run the one-time interactive login:
    ```bash
-   docker compose run --rm coach python -m src.setup_strava
+   docker compose run --rm coach python -m src.setup_garmin
    ```
-4. Paste the output `STRAVA_REFRESH_TOKEN=...` into `.env`
-5. Restart: `docker compose up -d`
+2. Enter your Garmin Connect email + password (and MFA code if enabled).
+   Optionally set `GARMIN_EMAIL` in `.env` to prefill the email prompt.
+3. OAuth tokens are saved to `/data/garmin_tokens` automatically (valid ~1 year;
+   your password is never stored). Scheduled runs resume from those tokens.
+4. Restart: `docker compose up -d`
 
 ## Directory Structure
 
@@ -102,13 +102,13 @@ coach_claude/
 │   ├── templates.py      # Safe fallback workouts
 │   ├── history.py        # Persistent session log
 │   ├── feedback.py       # Athlete feedback log
-│   ├── strava.py         # Strava training load context + 3-week pattern analysis
+│   ├── garmin.py         # Garmin training load + recovery context + 3-week pattern analysis
 │   ├── profile.py        # Athlete profile & equipment
 │   ├── web.py            # Flask feedback web app
 │   ├── email_send.py     # HTML email + Gmail SMTP
 │   ├── exercise_links.py # Exercise → YouTube URLs
-│   └── setup_strava.py   # One-time Strava OAuth
-├── data/                 # Mounted volume (history.json, feedback.json, strava.db)
+│   └── setup_garmin.py   # One-time Garmin Connect login
+├── data/                 # Mounted volume (history.json, feedback.json, garmin.db, garmin_tokens)
 ├── .env                  # Your config (NOT committed)
 ├── .env.example          # Template
 ├── Dockerfile
@@ -144,6 +144,6 @@ docker compose run --rm coach python -m src.main monday
 |---------|-----|
 | Email not sent | Check `GMAIL_APP_PASSWORD` is 16 chars, no spaces; 2FA enabled |
 | Wrong time zone | Set `TZ` to valid IANA zone (e.g. `America/Los_Angeles`) |
-| Strava not working | Run `setup_strava` again; check token not expired |
+| Garmin not working | Re-run `setup_garmin`; tokens last ~1 year, then need a fresh login |
 | Web app not accessible | Check `WEB_HOST_PORT` in compose; firewall on Pi |
 | "No module named src" | Run from `/app` inside container; use `docker compose run coach ...` |

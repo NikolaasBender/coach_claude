@@ -3,7 +3,7 @@
 Flow:
   1. Determine target day (monday/friday) — from arg, env, or system clock.
   2. Decide deload (every 5th session since last deload).
-  3. Gather context: recent history, multi-week load analysis, Strava load,
+  3. Gather context: recent history, multi-week load analysis, Garmin load,
      recent athlete feedback, and the rotating mandatory hip-bridge variant.
   4. Ask EVERY configured model (Nemotron + DeepSeek) for a session. Each is
      validated against the shoulder guardrail with one corrective retry, then
@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # cron in a container does NOT inherit env — load .env explicitly
 
-from . import feedback, history, llm, strava, templates
+from . import feedback, garmin, history, llm, templates
 from .email_send import send
 from .exclusions import validate_workout
 
@@ -66,7 +66,7 @@ def build_variant(provider, day, deload, ctx):
     label = provider["label"]
     try:
         workout = llm.generate(
-            provider, day, deload, ctx["recent"], strava=ctx["strava"],
+            provider, day, deload, ctx["recent"], garmin=ctx["garmin"],
             load_summary=ctx["load_summary"], feedback=ctx["feedback"],
             hip_bridge=ctx["bridge"],
         )
@@ -75,7 +75,7 @@ def build_variant(provider, day, deload, ctx):
             print(f"[guardrail:{label}] tripped exclusions: {violations}", file=sys.stderr)
             fix = "Remove/replace these — they violate the shoulder rules: " + "; ".join(violations)
             workout = llm.generate(
-                provider, day, deload, ctx["recent"], strava=ctx["strava"],
+                provider, day, deload, ctx["recent"], garmin=ctx["garmin"],
                 load_summary=ctx["load_summary"], feedback=ctx["feedback"],
                 hip_bridge=ctx["bridge"], extra_note=fix,
             )
@@ -99,16 +99,23 @@ def main():
     deload = history.weeks_since_deload() >= (DELOAD_EVERY - 1)
     session_index = history.count()
 
+    garmin_ctx = garmin.load_context()
+    pattern_analysis = garmin_ctx.get("pattern_analysis", "")
+    recovery = garmin_ctx.get("recovery", "")
+    pattern_weeks = garmin_ctx.get("pattern_weeks", [])
+    pattern_trend = garmin_ctx.get("pattern_trend", "")
+
     ctx = {
         "recent": history.recent(4),
         "load_summary": history.load_summary(),
         "feedback": feedback.summary(),
-        "strava": strava.load_context(),
+        "garmin": garmin_ctx,
         "bridge": templates.hip_bridge(session_index),
         "session_index": session_index,
     }
 
     providers = llm.active_providers()
+    trend = llm.trend_analysis(providers[0], ctx, day=day, deload=deload) if providers else ""
     if not providers:
         print("[warn] no LLM providers configured — using template only", file=sys.stderr)
         seed = f"template-{day}-{datetime.now().date().isoformat()}"
@@ -132,6 +139,11 @@ def main():
         "date": datetime.now().date().isoformat(),
         "source": "llm" if providers else "template",
         "variants": variants,
+        "pattern_analysis": pattern_analysis,
+        "recovery": recovery,
+        "pattern_weeks": pattern_weeks,
+        "pattern_trend": pattern_trend,
+        "trend_analysis": trend,
     }
 
     send(session)

@@ -215,28 +215,33 @@ if entries:
 "
 ```
 
-## Modifying Strava Integration
+## Modifying Garmin Integration
 
-### Scopes
-Current: `activity:read` only. To add more:
-1. Update `REQUIRED_SCOPE` in `setup_strava.py`
-2. Re-run OAuth: `python -m src.setup_strava`
-3. Update `.env` with new refresh token
+### Garmin Auth
+Login is credential-based via the `garminconnect` library — no app registration,
+no scopes:
+1. One-time interactive login (email + password + MFA if enabled):
+   `python -m src.setup_garmin`
+2. OAuth tokens are cached at `GARMIN_TOKENS_PATH` (valid ~1 year); scheduled
+   runs resume from them via `Garmin().login(tokenstore)`.
+3. On expiry, just re-run `setup_garmin` — nothing to update in `.env`.
 
 ### Activity Filtering
-Edit `src/strava.py`:
-- `_fetch_activities()` — change `days` parameter (legacy 7-day fetch)
-- `_fetch_3weeks()` — change pagination or date range for 21-day fetch
-- `_classify_effort()` — adjust suffer score thresholds
+Edit `src/garmin.py`:
+- `_fetch_3weeks()` — change the 21-day fetch window
+- `_classify_effort()` — adjust aerobic Training Effect thresholds
+  (`_TE_MODERATE` / `_TE_HARD` / `_TE_VERY_HARD`)
 - `_summarize()` — change summary format
 - `_yesterday_note()` — change detail level
 - `_analyze_3week_pattern()` — modify pattern analysis output format
-- `_upsert_activities()` — change DB schema or upsert logic
+- `_fetch_wellness()` — change the 7-day wellness window (sleep, stress, body battery, HRV, steps)
+- `_recovery_summary()` — change the recovery snapshot format
+- `_upsert_activities()` / `_upsert_wellness()` — change DB schema or upsert logic
 
 ### Database Schema Changes
-If modifying the `activities` table:
-1. Edit `_init_db()` in `strava.py`
-2. Add migration logic or reset DB: `docker compose run --rm --entrypoint "" coach rm /data/strava.db`
+If modifying the `activities` or `wellness` tables:
+1. Edit `_init_db()` in `garmin.py`
+2. Add migration logic or reset DB: `docker compose run --rm --entrypoint "" coach rm /data/garmin.db`
 3. Rebuild: `docker compose up -d --build`
 ## Adding Scheduled Runs
 
@@ -411,12 +416,12 @@ finally:
 | `src/templates.py` | Fallback workouts, hip bridge | Yes |
 | `src/history.py` | Session persistence, load summary | Yes |
 | `src/feedback.py` | Feedback persistence, prompt digest | Yes |
-| `src/strava.py` | Training load context | Yes |
+| `src/garmin.py` | Training load + recovery context | Yes |
 | `src/profile.py` | Athlete config, equipment, schedule | Yes |
 | `src/web.py` | Web UI, feedback submission | Yes |
 | `src/email_send.py` | Email HTML, SMTP sending | Yes |
 | `src/exercise_links.py` | Exercise YouTube links | Yes |
-| `src/setup_strava.py` | One-time OAuth only | No (not in image) |
+| `src/setup_garmin.py` | One-time Garmin login only | Yes |
 | `Dockerfile` | Base image, deps, entrypoint | Yes |
 | `docker-compose.yml` | Services, ports, volumes | Yes |
 | `entrypoint.sh` | TZ setup, command routing | Yes |
@@ -441,5 +446,5 @@ finally:
 - [ ] Web app: session comparison view
 - [ ] Web app: export history/feedback as CSV
 - [ ] Per-exercise RPE tracking in feedback
-- [ ] Strava: power/HR data if available
+- [ ] Garmin: per-activity power data if available
 - [ ] Periodization: mesocycle planning
