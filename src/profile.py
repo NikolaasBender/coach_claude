@@ -27,6 +27,8 @@ EQUIPMENT = [
     "45lb kettlebell",
     "70lb kettlebell",
     "light dumbbells / fixed free weights (~10lb and up)",
+    "10lb and 25lb weight plates (handheld: pinch-grip carries, plate holds, plate-loaded landmine)",
+    "8lb weighted ball (wall stabilization, chest-height passes, rotational throws — nothing overhead)",
     "BOSU ball",
     "stability / yoga ball",
     "pull-up bar",

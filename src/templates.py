@@ -188,6 +188,20 @@ def _pick_main(pool, n, rng):
     return ([lead] if lead else []) + rest
 
 
+_UNILATERAL = re.compile(
+    r"single[\s-]*(arm|leg)|one[\s-]*arm|suitcase|split squat|lunge|step[\s-]*up|"
+    r"half[\s-]*kneeling|skater"
+)
+
+
+def _left_first(exercises):
+    """Unilateral work starts on the repaired side and the good side matches
+    it — otherwise the right arm quietly sets the pace and the left hides."""
+    for ex in exercises:
+        if "/side" in str(ex.get("reps", "")) or _UNILATERAL.search(ex["name"].lower()):
+            ex["notes"] = "Left first, right matches. " + ex.get("notes", "")
+
+
 def generate(day: str, deload: bool, seed: str, session_index: int = 0,
              reentry: bool = False):
     """Build a safe template workout. `day` is 'monday'/'friday'.
@@ -222,6 +236,8 @@ def generate(day: str, deload: bool, seed: str, session_index: int = 0,
             ex["sets"] = max(2, int(ex.get("sets", 3)) - 1)
             ex["rpe"] = min(7, ex.get("rpe", 7))
             ex["load"] = f"{ex.get('load', '')} (go light — first sessions back)".strip()
+
+    _left_first(main + finisher)
 
     return {
         "source": "template",

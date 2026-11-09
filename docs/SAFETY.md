@@ -27,6 +27,7 @@ Each rule: `(human_reason, [regex_patterns])`. Patterns matched case-insensitive
 | 5 | **Kipping / ballistic pull-ups** | `kipping`, `butterfly pull`, `ballistic pull` | Uncontrolled end-range ER strain |
 | 6 | **Wide-grip / deep bench** | `wide[\s-]*grip bench`, `wide[\s-]*grip press` | Anterior translation at end range |
 | 7 | **Explicit cocking cues** | `cocking position`, `abduction.*external rotation`, `external rotation.*abduction` | Abduction + ER under load |
+| 8 | **Overhead ball slams / wall balls / overhead throws** | `\bslams?\b`, `wall[\s-]*balls?`, `overhead (throw\|toss\|pass)` | Ballistic end-range overhead load |
 
 ## Validation Flow
 
@@ -60,7 +61,11 @@ HARD SHOULDER RULES (left shoulder, anterior labrum repair, recurrent dislocatio
 - AVOID loading the abduction + external-rotation ("cocking") position.
 - Overhead pressing is ALLOWED but must start light (band/TRX/landmine/KB) and progress slowly.
 - ALWAYS open with a shoulder rehab block: band external rotation, scapular control,
-  controlled TRX/row patterning.
+  controlled TRX/row patterning. External rotation is done with the elbow
+  pinned at the side — call it exactly "Band external rotation (elbow at side)".
+  Never put abduction angles in an exercise name.
+- Weighted-ball work stays at or below chest height: NO slams, wall balls, or
+  overhead throws.
 ```
 
 ## Allowed / Encouraged Movements
@@ -83,7 +88,7 @@ HARD SHOULDER RULES (left shoulder, anterior labrum repair, recurrent dislocatio
 - Hip thrusts (use floor-based glute bridge instead)
 - Incline/decline pressing
 
-Available: barbell, kettlebells (45lb, 70lb), dumbbells, BOSU, stability ball, pull-up bar, TRX, plyo box, bands.
+Available: barbell, kettlebells (45lb, 70lb), dumbbells, 10lb/25lb handheld plates, 8lb weighted ball (chest height and below — nothing overhead), BOSU, stability ball, pull-up bar, TRX, plyo box, bands.
 
 ## Mandatory Session Structure
 
@@ -97,6 +102,20 @@ Every workout (LLM or template) **guarantees**:
    - Session 2: Bodyweight glute bridge (paused)
    - Session 3: repeats cycle...
 4. **Two distinct core patterns**: a lower-core / anti-extension movement in Main (leg raises, dead bugs, reverse crunch, rollouts, hollow hold) **and** an anti-rotation / anti-lateral-flexion movement in the finisher block (Pallof press/hold, suitcase carry, side plank, band chop, bird dog). The hip bridge satisfies neither.
+5. **Single-sided work, left side first**: at least one single-arm upper-body and one single-leg movement; the left side goes first and the right matches its reps and load, so the good side can't compensate.
+6. **Left-shoulder check-ins**: the four standing questions plus 2-3 exercise-specific checks (`shoulder.ensure_checks()` backfills them on every variant).
+
+## Shoulder Feedback Loop (`src/shoulder.py`)
+
+After every session the athlete answers four standing questions — apprehension (0-10), pain (0-10), instability (clunk/slip/dead-arm/catching), left vs right on single-arm work — plus the session's exercise-specific checks. `shoulder.summary()` reads the whole feedback log (never trimmed) and puts the long-term trend, all-time instability events and recently flagged movements in the prompt, with directives keyed to the latest log:
+
+| Latest log | Directive |
+|------------|-----------|
+| Instability reported | No loaded pressing, no overhead, no hanging; left-arm work is rehab + closed-chain stability only; coach_notes tell the athlete to check in with the PT |
+| Pain ≥4 or apprehension ≥6 | Regress left-side load or range one step; avoid flagged movements |
+| Three quiet sessions in a row (apprehension ≤2, pain 0, no instability) | Progress ONE left-side single-arm movement a notch — never into loaded abduction + ER |
+
+These are prompt directives, not code-enforced; the exclusion guardrail remains the hard limit.
 
 ## Deload Protocol
 
@@ -118,11 +137,12 @@ When `consistency.py` detects a layoff (`rusty` or `off_wagon`), the session bec
 - [ ] Hip bridge rotation appropriate for your glute/hamstring capacity
 - [ ] Core selection (lower-core and anti-rotation) doesn't irritate your lumbar spine
 - [ ] Session volume (~55 min) matches your recovery capacity
+- [ ] Standing shoulder questions and directive thresholds in `src/shoulder.py` (instability / pain ≥4 / apprehension ≥6 / three quiet sessions) match how you want progression and regression handled
 - [ ] Email feedback loop works for you to flag issues quickly
 
 ## Emergency Stop
 
-If any movement **pinches, clicks, or feels unstable** — stop immediately. Log feedback via web app (rating 1, notes "shoulder pinch on X") so next session adapts.
+If any movement **pinches, clicks, or feels unstable** — stop immediately. Log feedback via web app (answer "yes" to the instability check-in, rating 1, notes "shoulder pinch on X") so next session adapts.
 
 ## Modifying Exclusions
 

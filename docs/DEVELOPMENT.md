@@ -195,6 +195,9 @@ Include new fields in LLM prompt digest.
 ### 4. Update `src/email_send.py` if needed
 Include in email if relevant.
 
+### Adding a standing shoulder question
+No web/feedback changes needed: append `{"key", "kind", "question"}` to `shoulder.STANDING_CHECKS` in `src/shoulder.py` (`kind` from `KINDS`). The web form (`std_<key>`), validation, `format_entry()`, and the email box pick it up automatically. Answers are stored with the question text for session checks, and standing answers by `key` — keep existing keys stable so the long-term log stays comparable.
+
 ## Modifying Email Template
 
 Edit `src/email_send.py`:
@@ -420,6 +423,7 @@ finally:
 | `src/feedback.py` | Feedback persistence, prompt digest | Yes |
 | `src/garmin.py` | Training load + recovery context | Yes |
 | `src/profile.py` | Athlete config, equipment, schedule | Yes |
+| `src/shoulder.py` | Left-shoulder check-ins, shoulder log + directives | Yes |
 | `src/web.py` | Web UI, feedback submission | Yes |
 | `src/email_send.py` | Email HTML, SMTP sending | Yes |
 | `src/exercise_links.py` | Exercise YouTube links | Yes |

@@ -1,9 +1,11 @@
 """Feedback web app (Flask).
 
 A small always-on service on the home server. Shows recent sessions and lets the
-athlete log, per session: a 1-5 rating, which model's version they preferred, and
-free-text notes. Everything lands in feedback.json on the shared /data volume,
-which the generator reads back into the prompt (see src/feedback.py).
+athlete log, per session: a 1-5 rating, which model's version they preferred,
+free-text notes, and the left-shoulder check-ins (standing questions every
+session plus the session's exercise-specific ones — see src/shoulder.py).
+Everything lands in feedback.json on the shared /data volume, which the
+generator reads back into the prompt (see src/feedback.py).
 
 Run: python -m src.web   (or `docker compose run --service-ports web`)
 """
@@ -15,7 +17,11 @@ import traceback
 
 from flask import Flask, redirect, request, url_for
 
-from . import feedback, history
+from . import feedback, history, shoulder
+
+# Upper bound on session-specific check fields read back from a form; checks
+# are deduped across model variants, so this comfortably covers several models.
+_MAX_FORM_CHECKS = 12
 
 app = Flask(__name__)
 
@@ -107,6 +113,9 @@ PAGE = """<!doctype html>
   td.rpe {{ color:#888; white-space:nowrap; }}
   .error {{ background:#fdecec; border-left:4px solid #c33; color:#900; padding:8px 10px;
            border-radius:4px; margin:8px 0; font-size:13px; }}
+  .shoulder {{ background:#fff8ec; border-left:4px solid #e8a33d; padding:4px 12px 10px;
+              border-radius:4px; margin-top:12px; }}
+  .shoulder label {{ font-weight:500; }}
 </style></head><body>
 <h1>coach_claude</h1>
 <p class="muted">Log how each session went. It feeds straight back into how the next one is designed.</p>
@@ -130,6 +139,42 @@ def _rating_stars(n):
     return STAR * n + STAR_EMPTY * (5 - n)
 
 
+def _answer_select(name, kind, question):
+    """One labelled dropdown for a shoulder question of the given kind."""
+    if kind == "scale":
+        options = [str(n) for n in range(11)]
+    elif kind == "side":
+        options = list(shoulder.SIDE_OPTIONS)
+    else:
+        options = list(shoulder.YESNO_OPTIONS)
+    opts = "".join(f'<option value="{_esc(o)}">{_esc(o)}</option>' for o in options)
+    return (
+        f'<label>{_esc(question)}</label>'
+        f'<select name="{name}"><option value="">—</option>{opts}</select>'
+    )
+
+
+def _shoulder_fields(entry):
+    """Standing questions (every session, forever) + this session's
+    exercise-specific checks. Question text rides along in hidden fields so the
+    stored answer is self-describing."""
+    rows = [
+        _answer_select(f"std_{spec['key']}", spec["kind"], spec["question"])
+        for spec in shoulder.STANDING_CHECKS
+    ]
+    for i, c in enumerate(shoulder.session_checks(entry)[:_MAX_FORM_CHECKS]):
+        rows.append(
+            f'<input type="hidden" name="chk_{i}_q" value="{_esc(c.get("question"))}">'
+            f'<input type="hidden" name="chk_{i}_ex" value="{_esc(c.get("exercise"))}">'
+            f'<input type="hidden" name="chk_{i}_kind" value="{_esc(c.get("kind"))}">'
+            + _answer_select(f"chk_{i}_a", c.get("kind"), c.get("question"))
+        )
+    return (
+        '<div class="shoulder"><div class="block-name">Left shoulder check-in</div>'
+        + "".join(rows) + "</div>"
+    )
+
+
 def _render_card(entry, fb_for_session):
     date = entry.get("date", "?")
     day = (entry.get("day") or "").title()
@@ -148,7 +193,9 @@ def _render_card(entry, fb_for_session):
         stars = f'<span class="stars">{_rating_stars(fb.get("rating"))}</span>'
         pref = f' · preferred <b>{_esc(fb.get("preferred_model"))}</b>' if fb.get("preferred_model") else ""
         note = f' — {_esc(fb.get("notes"))}' if fb.get("notes") else ""
-        logged_html += f'<div class="logged">{stars}{pref}{note}</div>'
+        sh = shoulder.format_entry(fb.get("shoulder"))
+        sh_html = f'<br><span class="muted">Shoulder: {_esc(sh)}</span>' if sh else ""
+        logged_html += f'<div class="logged">{stars}{pref}{note}{sh_html}</div>'
 
     model_options = "".join(
         f'<option value="{_esc(m)}">{_esc(m)}</option>' for m in models
@@ -186,6 +233,7 @@ def _render_card(entry, fb_for_session):
             </select>
           </div>
         </div>
+        {_shoulder_fields(entry)}
         <label>Notes (how it felt, shoulder, what to change)</label>
         <textarea name="notes" rows="2" placeholder="e.g. swings felt heavy, shoulder fine, want more single-leg"></textarea>
         <button type="submit">Save feedback</button>
@@ -286,6 +334,32 @@ def generate():
     return redirect(url_for("index"))
 
 
+def _shoulder_answers(form):
+    """Pull validated shoulder answers out of a submitted form, or None."""
+    standing = {}
+    for spec in shoulder.STANDING_CHECKS:
+        value = shoulder.parse_answer(spec["kind"], form.get(f"std_{spec['key']}"))
+        if value is not None:
+            standing[spec["key"]] = value
+    checks = []
+    for i in range(_MAX_FORM_CHECKS):
+        kind = form.get(f"chk_{i}_kind", "")
+        if kind not in shoulder.KINDS:
+            continue
+        value = shoulder.parse_answer(kind, form.get(f"chk_{i}_a"))
+        if value is None:
+            continue
+        checks.append({
+            "exercise": form.get(f"chk_{i}_ex", "").strip(),
+            "question": form.get(f"chk_{i}_q", "").strip(),
+            "kind": kind,
+            "answer": value,
+        })
+    if not standing and not checks:
+        return None
+    return {"standing": standing, "checks": checks}
+
+
 @app.route("/feedback", methods=["POST"])
 def submit_feedback():
     entry = {
@@ -297,8 +371,11 @@ def submit_feedback():
     rating = request.form.get("rating", "").strip()
     if rating.isdigit():
         entry["rating"] = int(rating)
+    answers = _shoulder_answers(request.form)
+    if answers:
+        entry["shoulder"] = answers
     # Ignore empty submissions (nothing meaningful entered).
-    if entry["preferred_model"] or entry["notes"] or entry.get("rating"):
+    if entry["preferred_model"] or entry["notes"] or entry.get("rating") or answers:
         feedback.append(entry)
     return redirect(url_for("index"))
 

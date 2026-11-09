@@ -50,12 +50,24 @@ JSON schema:
       {"name": string, "sets": number, "reps": string,
        "load": string, "rpe": number, "notes": string}
     ]}
+  ],
+  "shoulder_checks": [
+    {"exercise": string, "question": string, "kind": "scale" | "side" | "yesno"}
   ]
 }
 
 Always include exactly three blocks in order:
 1. "Shoulder rehab warmup"  2. "Main"  3. "Cycling finisher".
-Keep total session to ~55 minutes for an advanced lifter."""
+Keep total session to ~55 minutes for an advanced lifter.
+
+shoulder_checks: 2-3 questions the athlete answers AFTER the session about the
+LEFT (repaired) shoulder, each tied to one exercise in THIS session that loads
+it. "exercise" must be that exercise's exact name. Ask what that specific
+movement tests — apprehension at a particular range, whether the left
+scapula kept up, whether they cut depth or guarded. kind "scale" = 0-10,
+"side" = left vs right comparison (use for single-arm work), "yesno". Do NOT
+repeat the standing questions (overall apprehension, pain, clunk/slip,
+overall left-vs-right) — those are always asked."""
 
 
 def active_providers():
@@ -134,7 +146,8 @@ SESSION_MINUTES = {"off_wagon": 35, "rusty": 45}
 
 
 def _build_user_prompt(day, deload, history, garmin=None, load_summary="",
-                       feedback="", hip_bridge=None, consistency=None):
+                       feedback="", hip_bridge=None, consistency=None,
+                       shoulder_log=""):
     equip = "\n".join(f"- {e}" for e in P.EQUIPMENT)
     equip += f"\n\nNOTE: {P.EQUIPMENT_NOTES}"
     hist = json.dumps(history, indent=2) if history else "none yet (first session)"
@@ -163,6 +176,7 @@ technique, mobility, and core; fully recovered -> allow planned progression.
 
     load_section = f"\nSTRENGTH-LOAD ANALYSIS (recent weeks):\n{load_summary}\n" if load_summary else ""
     feedback_section = f"\n{feedback}\n" if feedback else ""
+    shoulder_section = f"\n{shoulder_log}\n" if shoulder_log else ""
 
     bridge_line = ""
     if hip_bridge:
@@ -192,7 +206,7 @@ EQUIPMENT AVAILABLE (use only these):
 {equip}
 
 DELOAD THIS SESSION: {deload}. If true, cut volume/intensity ~40%.
-{consistency_section}{garmin_section}{recovery_section}{load_section}{feedback_section}{bridge_line}
+{consistency_section}{garmin_section}{recovery_section}{load_section}{feedback_section}{shoulder_section}{bridge_line}
 REQUIRED CONTENT EVERY SESSION:
 - LEAD the Main block with a genuinely loaded COMPOUND lift (barbell or heavy
   KB/DB): squat, deadlift/RDL, loaded lunge or step-up, heavy KB swing on
@@ -210,6 +224,13 @@ REQUIRED CONTENT EVERY SESSION:
      block (Pallof press or hold, suitcase carry, side plank variant,
      half-kneeling band chop, bird dog).
   The hip bridge does not satisfy either one.
+- SINGLE-SIDED WORK: at least one single-arm upper-body movement (row, press,
+  carry, or closed-chain hold) and one single-leg movement. LEFT SIDE FIRST on
+  every unilateral exercise; the right side matches the left's reps and load,
+  never the other way round — the bad side sets the ceiling so the good side
+  can't compensate. Each unilateral exercise's notes start with "Left first,
+  right matches." and name the compensation to watch (torso rotation, shrug,
+  rib flare, hip hike, cutting range on the left).
 - Deliberately vary exercises week to week; rotate away from what was used most
   in the recent block. Nudge load/reps up where the athlete handled it well.
 - In coach_notes, briefly ACKNOWLEDGE the recent training block and feedback
@@ -238,13 +259,15 @@ def _extract_json(text: str):
 
 
 def generate(provider, day, deload, history, garmin=None, load_summary="",
-             feedback="", hip_bridge=None, consistency=None, extra_note=None):
+             feedback="", hip_bridge=None, consistency=None, shoulder_log="",
+             extra_note=None):
     """Call one provider's LLM and return a parsed workout dict.
 
     Raises on failure so the caller can retry or fall back to templates.
     `provider` is one of the PROVIDERS dicts. `consistency` is a
     consistency.assess() dict — it decides session length and whether this is a
-    comeback session.
+    comeback session. `shoulder_log` is shoulder.summary() over the full
+    feedback history.
     """
     api_key = os.environ[provider["key_env"]]
     client = OpenAI(base_url=provider["base_url"], api_key=api_key)
@@ -252,6 +275,7 @@ def generate(provider, day, deload, history, garmin=None, load_summary="",
     user = _build_user_prompt(
         day, deload, history, garmin=garmin, load_summary=load_summary,
         feedback=feedback, hip_bridge=hip_bridge, consistency=consistency,
+        shoulder_log=shoulder_log,
     )
     if extra_note:
         # Used on retry to tell the model which exercises it must replace.

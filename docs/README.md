@@ -53,6 +53,7 @@ coach_claude/
 │   ├── profile.py          # Athlete profile & equipment
 │   ├── web.py              # Flask feedback web app
 │   ├── email_send.py       # HTML email + Gmail SMTP
+│   ├── shoulder.py         # Left-shoulder check-ins + long-term shoulder log
 │   ├── exercise_links.py   # Exercise → YouTube URLs
 │   └── setup_garmin.py     # One-time Garmin Connect login
 ├── data/                   # Mounted volume (history.json, feedback.json, garmin.db, garmin_tokens)
@@ -80,6 +81,8 @@ coach_claude/
 6. **Consistency & Re-entry**: `consistency.py` scores adherence from Garmin strength activities plus logged feedback (`on_track` / `rusty` / `off_wagon`). After a layoff the session becomes a comeback: shorter (45 or 35 min), RPE-capped, fewer main lifts, one play element, an amber banner on the email, and no deload stacked on top.
 
 7. **Deload Protocol**: Every 5th session (configurable) reduces volume while maintaining movement patterns. Suppressed while in re-entry.
+
+8. **Left-Shoulder Check-ins**: Every session carries four permanent standing questions (apprehension, pain, instability, left vs right) plus 2-3 exercise-specific checks. `shoulder.py` summarizes the full, never-trimmed log into the prompt with directives (instability → no loaded pressing/overhead/hanging + PT check-in; rough → regress; three quiet sessions → progress one left-side movement a notch).
 
 ## Support
 

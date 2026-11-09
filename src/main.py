@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # cron in a container does NOT inherit env — load .env explicitly
 
-from . import consistency, feedback, garmin, history, llm, templates
+from . import consistency, feedback, garmin, history, llm, shoulder, templates
 from .email_send import send
 from .exclusions import validate_workout
 
@@ -113,6 +113,7 @@ def build_variant(provider, day, deload, ctx):
             provider, day, deload, ctx["recent"], garmin=ctx["garmin"],
             load_summary=ctx["load_summary"], feedback=ctx["feedback"],
             hip_bridge=ctx["bridge"], consistency=ctx["consistency"],
+            shoulder_log=ctx["shoulder_log"],
         )
         ok, violations = validate_workout(workout)
         if not ok:
@@ -122,7 +123,7 @@ def build_variant(provider, day, deload, ctx):
                 provider, day, deload, ctx["recent"], garmin=ctx["garmin"],
                 load_summary=ctx["load_summary"], feedback=ctx["feedback"],
                 hip_bridge=ctx["bridge"], consistency=ctx["consistency"],
-                extra_note=fix,
+                shoulder_log=ctx["shoulder_log"], extra_note=fix,
             )
             ok, violations = validate_workout(workout)
         if ok:
@@ -167,6 +168,9 @@ def main():
         "bridge": templates.hip_bridge(session_index),
         "session_index": session_index,
         "consistency": state,
+        # Whole feedback history, not a recent window: the shoulder log is
+        # meant to be read over months and years.
+        "shoulder_log": shoulder.summary(feedback.load()),
     }
     print(f"[consistency] mode={state['mode']} days_since={state['days_since']} "
           f"strength_28d={state['strength_28d']}", file=sys.stderr)
@@ -184,6 +188,10 @@ def main():
         for provider in providers:
             w = build_variant(provider, day, deload, ctx)
             variants.append({"model": w.get("model", provider["label"]), "workout": w})
+
+    # Every session ships with left-shoulder check-ins, whatever produced it.
+    for v in variants:
+        shoulder.ensure_checks(v["workout"])
 
     # Final safety net: never email an unvalidated workout.
     for v in variants:

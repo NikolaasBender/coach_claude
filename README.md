@@ -50,14 +50,25 @@ history.json + load analysis + Garmin (training load + recovery) + feedback
   re-entry shape: shorter (35 min off-wagon, 45 min rusty), RPE capped, fewer
   main lifts, and one deliberate play element (KB flow, EMOM, balance or jump
   challenge). A deload is skipped while re-entering — it's already light.
+- **Single-sided work, left side first** — at least one single-arm upper-body
+  and one single-leg movement; the left (repaired) side goes first and the
+  right matches its reps and load ("Left first, right matches.").
+- **Left-shoulder check-ins** — four standing questions asked after every
+  session forever (apprehension 0-10, pain 0-10, clunk/slip/dead-arm, left vs
+  right on single-arm work) plus 2-3 questions tied to that session's exercises.
+  The whole answer log (never trimmed) goes back into the prompt: instability →
+  no loaded pressing/overhead/hanging and a PT check-in; a rough session →
+  regress the left side; three quiet sessions → progress one movement a notch.
 - **More variety** — larger exercise pools; the model is told to rotate away
   from whatever it used most recently.
 
 ## Feedback web app
 
 An always-on Flask app (second container, port `8080`) lists recent sessions and
-lets you log a rating, which coach you preferred, and notes. It writes to
-`data/feedback.json` on the shared volume, which feeds straight back into the
+lets you log a rating, which coach you preferred, notes, and the left-shoulder
+check-in (standing questions + that session's checks; a shoulder-only
+submission is saved). It writes to `data/feedback.json` on the shared volume,
+which feeds straight back into the
 next prompt. Reach it on your LAN at `http://<pi-host>:8080` — set that same URL
 as `WEB_URL` in `.env` so the workout emails link to it.
 
@@ -108,6 +119,7 @@ python -m src.web   # serves on http://localhost:8080
 | Safe fallback exercises, hip-bridge rotation, core pools | `src/templates.py` |
 | Layoff thresholds, re-entry + ramp-back rules | `src/consistency.py` |
 | LLM providers (Nemotron / DeepSeek) | `src/llm.py` `PROVIDERS` |
+| Shoulder standing questions, check rules, progression/regression directives | `src/shoulder.py` |
 | Feedback web app | `src/web.py` |
 | Deload frequency, models, web port, schedule | `.env`, `crontab` |
 

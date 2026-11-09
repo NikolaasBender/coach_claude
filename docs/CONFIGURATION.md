@@ -92,6 +92,8 @@ List of available equipment. Injected into prompts so LLM/templates pick valid e
     "45lb kettlebell",
     "70lb kettlebell",
     "light dumbbells / fixed free weights (~10lb and up)",
+    "10lb and 25lb weight plates (handheld: pinch-grip carries, plate holds, plate-loaded landmine)",
+    "8lb weighted ball (wall stabilization, chest-height passes, rotational throws — nothing overhead)",
     "BOSU ball",
     "stability / yoga ball",
     "pull-up bar",
@@ -139,6 +141,7 @@ Each entry: `(human_reason, [regex_patterns])`. Patterns matched case-insensitiv
 | Kipping/ballistic pull-ups | `kipping`, `butterfly pull`, `ballistic pull` | Uncontrolled end-range ER strain |
 | Wide-grip bench | `wide[\s-]*grip bench`, `wide[\s-]*grip press` | Anterior translation at end range |
 | Cocking position cues | `cocking position`, `abduction.*external rotation`, `external rotation.*abduction` | Abduction + ER under load |
+| Overhead ball slams / wall balls / overhead throws | `\bslams?\b`, `wall[\s-]*balls?`, `overhead (throw\|toss\|pass)` | Ballistic end-range overhead load |
 
 ### `PROMPT_CONSTRAINTS`
 Plain-text version injected into every LLM prompt so models avoid these up front:
@@ -151,8 +154,27 @@ HARD SHOULDER RULES (left shoulder, anterior labrum repair, recurrent dislocatio
 - NO wide-grip or deep end-range barbell bench (limit ROM, neutral/close grip only).
 - AVOID loading the abduction + external-rotation ("cocking") position.
 - Overhead pressing is ALLOWED but must start light (band/TRX/landmine/KB) and progress slowly.
-- ALWAYS open with a shoulder rehab block: band external rotation, scapular control, controlled TRX/row patterning.
+- ALWAYS open with a shoulder rehab block: band external rotation, scapular control, controlled TRX/row patterning. External rotation is done with the elbow pinned at the side — call it exactly "Band external rotation (elbow at side)". Never put abduction angles in an exercise name.
+- Weighted-ball work stays at or below chest height: NO slams, wall balls, or overhead throws.
 ```
+
+## Shoulder Check-ins (`src/shoulder.py`)
+
+Permanent left-shoulder check-ins; answers land in `feedback.json` under `shoulder`.
+
+**Standing questions** (`STANDING_CHECKS`, asked after every session forever — change with care, the long-term record depends on them):
+
+| Key | Kind | Asks |
+|-----|------|------|
+| `apprehension` | scale 0-10 | Worst "it might slip" feeling today |
+| `pain` | scale 0-10 | Pain during or after the session |
+| `instability` | yes/no | Any clunk, slip, dead-arm or catching |
+| `left_vs_right` | side | Single-arm work, left vs right |
+
+**Knobs:**
+- `MIN_SESSION_CHECKS = 2` / `MAX_SESSION_CHECKS = 3` — session-specific checks per session (model-proposed, backfilled by `ensure_checks`)
+- `SIDE_OPTIONS = ("left much harder", "left a bit harder", "same", "left easier")`; `YESNO_OPTIONS = ("no", "yes")`
+- Directive thresholds in `summary()` (keyed to the latest log): instability "yes" → no loaded pressing/overhead/hanging + PT check-in; pain ≥4 or apprehension ≥6 → regress left side one step; 3 sessions in a row with apprehension ≤2, pain 0, no instability → progress one left-side single-arm movement a notch (never into loaded abduction + ER). Flagged movements: scale ≥4 or "left much harder" in the last 8 logs.
 
 ## Template Exercise Pools (`src/templates.py`)
 

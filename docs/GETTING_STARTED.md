@@ -107,6 +107,7 @@ coach_claude/
 │   ├── profile.py        # Athlete profile & equipment
 │   ├── web.py            # Flask feedback web app
 │   ├── email_send.py     # HTML email + Gmail SMTP
+│   ├── shoulder.py       # Left-shoulder check-ins + long-term shoulder log
 │   ├── exercise_links.py # Exercise → YouTube URLs
 │   └── setup_garmin.py   # One-time Garmin Connect login
 ├── data/                 # Mounted volume (history.json, feedback.json, garmin.db, garmin_tokens)

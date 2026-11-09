@@ -32,9 +32,10 @@ Full orchestration:
 2. `state = consistency.assess()`; `reentry = state["mode"] != "on_track"`
 3. `deload = history.weeks_since_deload() >= (DELOAD_EVERY - 1) and not reentry` — a comeback is already light
 4. `garmin_ctx = garmin.load_context()` → includes `pattern_analysis`, `pattern_weeks`/`pattern_trend`, `recovery`
-5. `ctx = { recent, load_summary, feedback, garmin, bridge, session_index, consistency }`
+5. `ctx = { recent, load_summary, feedback, garmin, bridge, session_index, consistency, shoulder_log }` — `shoulder_log = shoulder.summary(feedback.load())` (whole feedback history, not a recent window)
 6. `trend = llm.trend_analysis(providers[0], ctx, day, deload)` — LLM trend read (best-effort, "" on failure)
 7. Call Nemotron via `build_variant()` (single provider); with no providers configured, `templates.generate(..., reentry=reentry)` only
+   - `shoulder.ensure_checks(v["workout"])` then runs on every variant (LLM or template) before final validation
 8. `email_send.send(session)` with `consistency` banner + `trend_analysis` + `recovery` + pattern volume graph at top
 9. `history.append(session)` — the session dict carries `"consistency": state`
 
@@ -66,7 +67,7 @@ Best-effort: returns `""` on any failure or when no context exists, so the email
 ### `SESSION_MINUTES: dict[str, int]`
 Session length by consistency mode: `{"off_wagon": 35, "rusty": 45}`. Any other mode falls back to `profile.ATHLETE["session_minutes"]` (55).
 
-### `_build_user_prompt(day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None, consistency=None) -> str`
+### `_build_user_prompt(day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None, consistency=None, shoulder_log="") -> str`
 Builds the full user prompt injected into every LLM call. Includes:
 - Athlete profile + shoulder constraints
 - Equipment list
@@ -76,14 +77,18 @@ Builds the full user prompt injected into every LLM call. Includes:
 - Garmin 7-day training load summary + yesterday detail
 - Current recovery state (sleep, stress, body battery, HRV) — omitted when empty
 - Recent athlete feedback
+- Left-shoulder log (`shoulder_log`, from `shoulder.summary()`) — omitted when empty
 - Mandatory hip bridge variant for today
 - `PROMPT_CONSTRAINTS` from exclusions
-- **REQUIRED CONTENT EVERY SESSION**: a genuinely loaded compound lift leading the Main block (bodyweight plyos, band and TRX work do not count); the mandated hip bridge, made demanding when the rotation calls for the unweighted variant; TWO distinct core patterns — a lower-core / anti-extension movement in Main *and* an anti-rotation / anti-lateral-flexion movement in the Cycling finisher (the hip bridge satisfies neither); deliberate week-to-week variety; coach_notes acknowledging the recent block and feedback
+- **REQUIRED CONTENT EVERY SESSION**: a genuinely loaded compound lift leading the Main block (bodyweight plyos, band and TRX work do not count); the mandated hip bridge, made demanding when the rotation calls for the unweighted variant; TWO distinct core patterns — a lower-core / anti-extension movement in Main *and* an anti-rotation / anti-lateral-flexion movement in the Cycling finisher (the hip bridge satisfies neither); SINGLE-SIDED WORK — at least one single-arm upper-body movement and one single-leg movement, LEFT SIDE FIRST with the right matching the left's reps and load, notes starting "Left first, right matches." and naming the compensation to watch; deliberate week-to-week variety; coach_notes acknowledging the recent block and feedback
 
-### `generate(provider, day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None, consistency=None, extra_note=None) -> dict`
+### `SYSTEM: str`
+System prompt with the JSON schema. Besides `blocks`/`focus`/`coach_notes`, the schema includes `shoulder_checks: [{"exercise", "question", "kind": "scale"|"side"|"yesno"}]` — 2-3 post-session questions about the left shoulder, each tied to an exercise in this session by exact name; must not repeat the standing questions.
+
+### `generate(provider, day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None, consistency=None, shoulder_log="", extra_note=None) -> dict`
 Calls one provider's OpenAI-compatible endpoint:
 1. Creates `OpenAI` client with provider's `base_url` + API key
-2. Sends `SYSTEM` + user prompt (built with the same context, including `consistency`)
+2. Sends `SYSTEM` + user prompt (built with the same context, including `consistency` and `shoulder_log`)
 3. Extracts JSON from response via `_extract_json()`
 4. Returns parsed workout dict
 
@@ -97,7 +102,7 @@ Pulls first balanced JSON object from model output (handles markdown fences, ext
 ## `src/exclusions.py` — Safety Guardrail
 
 ### `EXCLUSIONS: list[tuple[str, list[str]]]`
-List of `(reason, [patterns])`. Patterns are regex, matched case-insensitive against exercise name.
+List of `(reason, [patterns])`. Patterns are regex, matched case-insensitive against exercise name. Includes "overhead ball slams / wall balls / overhead throws — ballistic end-range overhead load" (`\bslams?\b`, `wall[\s-]*balls?`, `overhead (throw|toss|pass)`).
 
 ### `check(exercise_name: str) -> list[str]`
 Returns list of violation reasons for a single exercise name. Empty = safe.
@@ -107,7 +112,7 @@ Scans all exercises in `workout["blocks"][*]["exercises"][*]["name"]`.
 Returns `(ok, violations)` where `violations` = list of `"{exercise_name}: {reason}"`.
 
 ### `PROMPT_CONSTRAINTS: str`
-Plain-text constraints injected into LLM prompt (see SAFETY.md).
+Plain-text constraints injected into LLM prompt (see SAFETY.md), incl. "Weighted-ball work stays at or below chest height: NO slams, wall balls, or overhead throws."
 
 ---
 
@@ -171,6 +176,44 @@ Builds a complete safe workout:
 
 ### `SCHEDULE_FOCUS(is_lower: bool) -> str`
 Returns focus string for day type.
+
+### `_left_first(exercises) -> None`
+Prefixes "Left first, right matches." to the notes of unilateral template exercises (reps containing "/side", or names with single-arm/leg, suitcase, split squat, lunge, step-up, half-kneeling, skater). Applied to main + finisher.
+
+---
+
+## `src/shoulder.py` — Left-Shoulder Check-ins
+
+Does not import `feedback.py` (feedback imports it); callers pass entries in.
+
+### `KINDS = ("scale", "side", "yesno")` / `SIDE_OPTIONS` / `YESNO_OPTIONS`
+Answer kinds. `scale` = int 0-10; `SIDE_OPTIONS = ("left much harder", "left a bit harder", "same", "left easier")`; `YESNO_OPTIONS = ("no", "yes")`.
+
+### `STANDING_CHECKS: list[dict]`
+Fixed `{key, kind, question}` asked after every session forever (code constants, not model output): `apprehension` (scale), `pain` (scale), `instability` (yesno — clunk/slip/dead-arm/catching), `left_vs_right` (side — single-arm work left vs right).
+
+### `MIN_SESSION_CHECKS = 2` / `MAX_SESSION_CHECKS = 3`
+Bounds on session-specific checks.
+
+### `ensure_checks(workout) -> dict`
+Validates the model's `shoulder_checks` (dict, kind in `KINDS`, non-empty question truncated to 200 chars, exercise must match one in the session, one check per exercise, max `MAX_SESSION_CHECKS`) and backfills to `MIN_SESSION_CHECKS` with deterministic defaults from exercises that load the left shoulder (leg-dominant work excluded; non-rehab blocks first). Unilateral → `side` question, else `scale`; if nothing qualifies, a `yesno` "cut range or guard" question. Mutates and returns the workout.
+
+### `session_checks(entry) -> list[dict]`
+All session checks for a history entry, deduped by question across variants. `[]` for legacy entries.
+
+### `parse_answer(kind, raw)`
+Normalizes a submitted answer: scale → int 0-10; side → member of `SIDE_OPTIONS`; yesno → member of `YESNO_OPTIONS`. `None` when blank/invalid.
+
+### `format_entry(shoulder) -> str`
+One-line rendering of an entry's shoulder answers (e.g. `apprehension 2/10; pain 0/10; …`).
+
+### `summary(entries) -> str`
+LEFT-SHOULDER LOG for the prompt, built from the WHOLE feedback log (never trimmed): recent 6 logs, long-term apprehension trend (first 3 vs last 3 avg when ≥4 logs), all-time instability events, movements flagged in the last 8 logs (scale ≥4 or "left much harder"). Then `ACT ON THIS` directives keyed to the latest log:
+- instability "yes" → no loaded pressing, no overhead, no hanging; left-arm work is rehab + closed-chain only; coach_notes tell the athlete to check in with the PT
+- else pain ≥4 or apprehension ≥6 → regress left-side load or range one step, avoid flagged movements
+- else last 3 logs all apprehension ≤2, pain 0, no instability → progress ONE left-side single-arm movement a notch, never into loaded abduction + external rotation
+
+With no logs: a "nothing logged yet, program conservatively" line.
 
 ---
 
@@ -250,9 +293,10 @@ Last `n` entries.
 Human-readable digest for LLM prompt:
 ```
 RECENT ATHLETE FEEDBACK (adapt to this...):
-  2025-01-15 Monday: 4/5, preferred Nemotron — "felt solid"
+  2025-01-15 Monday: 4/5, preferred Nemotron — "felt solid" [shoulder: apprehension 2/10; pain 0/10; instability no]
   2025-01-10 Friday: 3/5, preferred DeepSeek — "shoulder tweak on landmine"
 ```
+Each entry with shoulder answers gets a `[shoulder: …]` suffix (`shoulder.format_entry`).
 Returns "No athlete feedback logged yet." if empty.
 
 **Feedback entry schema:**
@@ -402,7 +446,7 @@ Shoulder specifics (side, history, status, always_include_rehab).
 Human-readable equipment constraints (no bench).
 
 ### `EQUIPMENT: list[str]`
-Available equipment for prompt injection.
+Available equipment for prompt injection (incl. 10lb/25lb handheld weight plates and an 8lb weighted ball — nothing overhead).
 
 ### `SCHEDULE: dict[str, str]`
 Day → focus mapping.
@@ -429,13 +473,15 @@ Renders session history with feedback forms. Reads `history.json` + `feedback.js
 Triggers workout generation via `main.main()` in background thread (with lock). Redirects to `/`.
 
 #### `POST /feedback` → `submit_feedback()`
-Accepts form: `session_date`, `day`, `rating` (1-5), `preferred_model`, `notes`. Appends to `feedback.json`. Redirects to `/`.
+Accepts form: `session_date`, `day`, `rating` (1-5), `preferred_model`, `notes`, plus shoulder fields `std_<key>` (one per standing check) and `chk_<i>_q` / `chk_<i>_ex` / `chk_<i>_kind` / `chk_<i>_a` per session check. Saved if any of model/notes/rating/shoulder answers is present (shoulder-only submissions count). Appends to `feedback.json`. Redirects to `/`.
 
 #### `GET /healthz` → `healthz()`
 Returns `{"ok": True}`.
 
 ### Template Rendering (Jinja-free)
-- `_render_card(entry, fb_for_session)` — session card with feedback form
+- `_render_card(entry, fb_for_session)` — session card with feedback form (includes the shoulder check-in; logged feedback shows a "Shoulder: …" line)
+- `_shoulder_fields(entry)` — "Left shoulder check-in" section: standing questions + up to `_MAX_FORM_CHECKS` session checks as dropdowns (`_answer_select`); question/exercise/kind in hidden fields
+- `_shoulder_answers(form)` — validated `{"standing": {...}, "checks": [...]}` via `shoulder.parse_answer`, or `None` if nothing answered
 - `_render_workout_detail(model_label, workout)` — expandable workout blocks
 - `_render_latest(entry)` — hero card for most recent session
 - `_render_exercise_rows(exercises)` — exercise table rows with YouTube links
@@ -462,7 +508,8 @@ Full HTML email with:
 - Day + deload banner
 - Variant table (single Nemotron proposal)
 - Coach notes per variant
-- "Log Feedback" CTA button (links to `WEB_URL`)
+- **LEFT SHOULDER CHECK-IN** box: standing + session questions ("notice these during the session, log them after")
+- "Log Feedback" CTA button (links to `WEB_URL`; text mentions the check-in)
 - Comparison hint (only when multiple variants)
 
 ### `send(session: dict) -> None`
@@ -541,7 +588,10 @@ Interactive CLI:
     }
   ],
   "focus": "lower body power + posterior chain",
-  "coach_notes": "Rotated away from KB swings used last Monday..."
+  "coach_notes": "Rotated away from KB swings used last Monday...",
+  "shoulder_checks": [
+    { "exercise": "single-arm landmine press", "question": "Landmine press: left side compared with right?", "kind": "side" }
+  ]
 }
 ```
 
@@ -553,9 +603,14 @@ Interactive CLI:
   "rating": 4,
   "preferred_model": "Nemotron",
   "notes": "felt solid, shoulder good",
+  "shoulder": {
+    "standing": {"apprehension": 2, "pain": 0, "instability": "no", "left_vs_right": "left a bit harder"},
+    "checks": [{"exercise": "single-arm landmine press", "question": "Landmine press: left side compared with right?", "kind": "side", "answer": "same"}]
+  },
   "logged_at": "2025-01-15T18:30:00+00:00"
 }
 ```
+`shoulder` is optional; question text is stored with each answer so records stay readable if wording changes.
 
 ---
 

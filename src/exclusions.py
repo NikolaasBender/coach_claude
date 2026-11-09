@@ -45,6 +45,10 @@ EXCLUSIONS = [
         [r"cocking position", r"abduction.*external rotation",
          r"external rotation.*abduction"],
     ),
+    (
+        "overhead ball slams / wall balls / overhead throws — ballistic end-range overhead load",
+        [r"\bslams?\b", r"wall[\s-]*balls?", r"overhead (throw|toss|pass)"],
+    ),
 ]
 
 
@@ -84,4 +88,8 @@ PROMPT_CONSTRAINTS = """HARD SHOULDER RULES (left shoulder, anterior labrum repa
 - AVOID loading the abduction + external-rotation ("cocking") position.
 - Overhead pressing is ALLOWED but must start light (band/TRX/landmine/KB) and progress slowly.
 - ALWAYS open with a shoulder rehab block: band external rotation, scapular control,
-  controlled TRX/row patterning."""
+  controlled TRX/row patterning. External rotation is done with the elbow
+  pinned at the side — call it exactly "Band external rotation (elbow at side)".
+  Never put abduction angles in an exercise name.
+- Weighted-ball work stays at or below chest height: NO slams, wall balls, or
+  overhead throws."""

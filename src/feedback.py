@@ -10,6 +10,8 @@ import json
 import os
 from datetime import datetime, timezone
 
+from . import shoulder
+
 FEEDBACK_PATH = os.environ.get("FEEDBACK_PATH", "data/feedback.json")
 
 
@@ -55,7 +57,9 @@ def summary(n=6):
         pref_str = f", preferred {pref}" if pref else ""
         notes = (e.get("notes") or "").strip()
         notes_str = f' — "{notes}"' if notes else ""
-        lines.append(f"  {when} {day}: {rating_str}{pref_str}{notes_str}")
+        sh = shoulder.format_entry(e.get("shoulder"))
+        sh_str = f" [shoulder: {sh}]" if sh else ""
+        lines.append(f"  {when} {day}: {rating_str}{pref_str}{notes_str}{sh_str}")
 
     return (
         "RECENT ATHLETE FEEDBACK (adapt to this — respect what felt too hard/easy "
