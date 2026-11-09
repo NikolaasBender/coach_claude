@@ -38,7 +38,18 @@ history.json + load analysis + Garmin (training load + recovery) + feedback
   days trim volume toward technique/mobility/core, recovered days progress as
   planned.
 - **A hip bridge every time**, rotating single-leg → weighted → unweighted.
-- **A dedicated lower-core movement** (leg raises, dead bugs, reverse crunch…).
+- **A loaded compound lead-off** — the Main block always opens with a real
+  loaded lift (squat, deadlift/RDL, loaded lunge/step-up, chin-up, row…);
+  band/TRX/bodyweight work follows it, it never replaces it.
+- **Two distinct core patterns** — a lower-core / anti-extension movement in
+  Main (leg raises, dead bugs, reverse crunch, rollouts…) *and* an
+  anti-rotation / anti-lateral-flexion movement in the finisher block (Pallof,
+  suitcase carry, side plank, band chop, bird dog).
+- **Comeback sessions** — `consistency.py` reads the tracker (Garmin strength
+  activities + logged feedback). After a layoff it switches the session to
+  re-entry shape: shorter (35 min off-wagon, 45 min rusty), RPE capped, fewer
+  main lifts, and one deliberate play element (KB flow, EMOM, balance or jump
+  challenge). A deload is skipped while re-entering — it's already light.
 - **More variety** — larger exercise pools; the model is told to rotate away
   from whatever it used most recently.
 
@@ -94,7 +105,8 @@ python -m src.web   # serves on http://localhost:8080
 |---|---|
 | Athlete profile, equipment, day focus | `src/profile.py` |
 | Shoulder exclusion rules (the guardrail) | `src/exclusions.py` |
-| Safe fallback exercises, hip-bridge rotation, core pool | `src/templates.py` |
+| Safe fallback exercises, hip-bridge rotation, core pools | `src/templates.py` |
+| Layoff thresholds, re-entry + ramp-back rules | `src/consistency.py` |
 | LLM providers (Nemotron / DeepSeek) | `src/llm.py` `PROVIDERS` |
 | Feedback web app | `src/web.py` |
 | Deload frequency, models, web port, schedule | `.env`, `crontab` |

@@ -18,20 +18,23 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                     main.py (orchestrator)                      │
 │  1. Determine target day (arg / env / system clock)             │
-│  2. Decide deload (every 5th session since last deload)         │
-│  3. Gather context:                                             │
+│  2. consistency.assess() → on_track / rusty / off_wagon         │
+│  3. Decide deload (every 5th session; suppressed in re-entry)   │
+│  4. Gather context:                                             │
 │     • Recent history (last 4 sessions)                          │
 │     • Multi-week load analysis (exercise freq, avg RPE, focus)  │
 │     • Garmin 3-week pattern analysis + 7-day summary + yesterday│
 │     • Wellness recovery: sleep, stress, body battery, HRV       │
 │     • Recent athlete feedback (last 6 entries)                  │
 │     • Mandatory hip-bridge variant (rotates SL → weighted → BW) │
-│  4. Call Nemotron LLM with full context                         │
+│     • Consistency state (layoff gap, 28-day count, riding)      │
+│  5. Call Nemotron LLM with full context                         │
 │     a. Validate against exclusions.py                           │
 │     b. One retry on failure                                     │
-│     c. Fallback to template if still unsafe                     │
-│  5. Email: trend read + recovery + volume graph at top          │
-│  6. Append session to history.json                              │
+│     c. Fallback to template (reentry=) if still unsafe          │
+│     d. Backfill required content (compound + both core patterns)│
+│  6. Email: comeback banner + trend read + recovery + graph      │
+│  7. Append session to history.json (incl. consistency state)    │
 └───────────────────────────┬─────────────────────────────────────┘
                             │
               ┌─────────────┴─────────────┐
@@ -61,18 +64,31 @@ Both mount:
 ## Core Modules
 
 ### `src/main.py` — Orchestrator
-- Entry point, determines day & deload
-- Gathers all context (history, garmin, feedback, hip bridge)
+- Entry point, determines day; runs `consistency.assess()` first and sets `reentry = mode != "on_track"`
+- Deload is suppressed while in re-entry (a comeback is already light)
+- Gathers all context (history, garmin, feedback, hip bridge, consistency state)
 - Calls each provider via `llm.generate()`
 - Validates with `exclusions.validate_workout()`
+- `_ensure_hip_bridge()` then `_ensure_required_content()` backfill the mandated compound lead-off, lower-core and anti-rotation movements from the vetted template pools
 - Sends email via `email_send.send()`
-- Appends to history
+- Appends to history (session dict carries `consistency`)
 
 ### `src/llm.py` — LLM Layer
 - `PROVIDERS` registry: **Nemotron only** (OpenAI-compatible endpoint)
 - Active provider = Nemotron when `NVIDIA_API_KEY` is set in env
-- `_build_user_prompt()`: injects athlete profile, constraints, context
+- `SESSION_MINUTES = {"off_wagon": 35, "rusty": 45}` — session target by consistency mode, else `profile.ATHLETE['session_minutes']`
+- `_build_user_prompt()`: injects athlete profile, constraints, context, and the CONSISTENCY block from `consistency.prompt_section()`
+- REQUIRED CONTENT block demands a loaded compound lead-off, the mandated hip bridge (harder version when the rotation calls for unweighted), two distinct core patterns, week-to-week variety, and coach_notes that acknowledge the recent block
 - `generate()`: calls provider, extracts JSON, returns workout dict
+
+### `src/consistency.py` — Adherence & Re-entry
+- Truth source is the tracker, not what was emailed: Garmin `strength_training` activities in `data/garmin.db` plus dates the athlete logged feedback on
+- Riding activity is read separately (`ride_count_7d`, `ride_hours_7d`) — still riding but not lifting = aerobically fit, detrained for lifting
+- `assess(now=None)` → `{mode, last_strength, days_since, strength_28d, ride_count_7d, ride_hours_7d}`
+- Modes: `on_track`; `rusty` (10–20 days off, or ≤3 completed sessions in 28 days); `off_wagon` (21+ days off, or nothing on record)
+- Thresholds: `RUSTY_DAYS=10`, `OFF_WAGON_DAYS=21`, `HABIT_SESSIONS_28D=3`
+- `prompt_section(state)` → CONSISTENCY block with RE-ENTRY RULES / RAMP-BACK RULES for the prompt; `headline(state)` → one-line email banner (`""` when on track)
+- No new env vars: reads `GARMIN_DB_PATH` and the feedback log
 
 ### `src/exclusions.py` — Hard Safety Guardrail
 - Regex patterns for dangerous movements (posterior labrum repair precautions)
@@ -81,9 +97,11 @@ Both mount:
 - `PROMPT_CONSTRAINTS` injected into LLM prompt to reduce rejections
 
 ### `src/templates.py` — Deterministic Fallback
-- Pre-vetted exercise pools (all clear exclusions)
-- `generate(day, deload, seed, session_index)` → safe workout
-- Guarantees: hip bridge (rotating), lower-core movement every session
+- Pre-vetted exercise pools (all clear exclusions): `LOWER_POWER`, `UPPER_PULL`, `HIP_BRIDGES`, `LOWER_CORE`, `ROTATIONAL_CORE` (anti-rotation / anti-lateral-flexion), `FINISHERS` (cycling-specific), `PLAY` (comeback/fun)
+- `generate(day, deload, seed, session_index=0, reentry=False)` → safe workout; the Main block is always led by a loaded compound (`_pick_main`)
+- `reentry=True`: 2 main lifts instead of 3, one set fewer, RPE capped at 7, loads annotated "go light", a `PLAY` item instead of a `FINISHERS` item, and comeback coach_notes
+- Guarantees every session: compound lead-off, rotating hip bridge, a lower-core movement, and an anti-rotation movement in the finisher block
+- Classifier helpers reused by `main.py` to audit LLM proposals: `is_compound`, `is_lower_core`, `is_rotational_core`, `pick_compound`, `pick_lower_core`, `pick_rotational_core`
 
 ### `src/history.py` — Persistent Session Log
 - `data/history.json` on mounted volume
@@ -120,7 +138,7 @@ Both mount:
 
 ### `src/web.py` — Feedback Web App (Flask)
 ### `src/email_send.py` — Email Rendering & Delivery
-- `render_html(session)`: **coach's trend read (LLM narrative), then recovery (Garmin) box, then the 3-week volume graph** (effort-colored table bars + trend lines; text-box fallback for legacy sessions), then side-by-side variant tables with exercise links
+- `render_html(session)`: **amber comeback banner** (from `consistency.headline(session["consistency"])`, shown only when not on track), then the **coach's trend read (LLM narrative), then recovery (Garmin) box, then the 3-week volume graph** (effort-colored table bars + trend lines; text-box fallback for legacy sessions), then side-by-side variant tables with exercise links
 - `send(session)`: Gmail SMTP (port 587, STARTTLS, App Password)
 - Uses `exercise_links.get_url()` for YouTube search links
 - Jinja-free: renders HTML via Python string templates
@@ -148,6 +166,9 @@ main.py ──▶ history.json (read)
        │       └─▶ _recovery_summary() → recovery
        │
        ├─▶ feedback.summary() ──▶ feedback.json (read)
+       │
+       ├─▶ consistency.assess() ──▶ garmin.db (strength + rides) + feedback.json
+       │       └─▶ mode → prompt_section() (prompt), reentry flag, email banner
        │
        ├─▶ templates.hip_bridge(session_index)
        │

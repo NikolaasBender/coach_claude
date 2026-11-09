@@ -162,13 +162,31 @@ All exercises pre-vetted against exclusions. Pools:
 - `LOWER_POWER` — Lower body power (squats, deadlifts, jumps, KB swings)
 - `UPPER_PULL` — Upper pulling (chin-ups, rows, landmine press)
 - `HIP_BRIDGES` — Rotating mandatory: single-leg → weighted → bodyweight
-- `LOWER_CORE` — Lower-core emphasis (leg raises, dead bugs, reverse crunch)
-- `FINISHERS` — General core, carries, cycling-specific finishers
+- `LOWER_CORE` — Lower-core / anti-extension (leg raises, hanging knee + straight-leg raises, dead bugs, reverse crunch, stability-ball knee tuck + rollout, hollow-body hold)
+- `ROTATIONAL_CORE` — Anti-rotation / anti-lateral-flexion (Pallof press/hold, suitcase carry, side plank variants, half-kneeling band chop, bird dog) — rides in the finisher block
+- `FINISHERS` — Cycling-specific finishers (single-leg RDL, BOSU balance reach, KB swing intervals, farmer carry)
+- `PLAY` — Comeback/fun movements (KB flow complex, low box jump ladder, carry medley, BOSU balance challenge, EMOMs) — replaces the `FINISHERS` pick on re-entry sessions
 
 ### Guaranteed Every Session
 1. **Shoulder rehab block** (from `REHAB_BLOCK`)
-2. **Mandatory hip bridge** (rotating variant from `HIP_BRIDGES`)
-3. **Dedicated lower-core movement** (from `LOWER_CORE`)
+2. **Loaded compound lead-off** opening the Main block (from `LOWER_POWER`/`UPPER_PULL`, selected by `is_compound()`)
+3. **Mandatory hip bridge** (rotating variant from `HIP_BRIDGES`)
+4. **Two distinct core patterns** — a lower-core / anti-extension movement in Main (from `LOWER_CORE`) *and* an anti-rotation / anti-lateral-flexion movement in the finisher block (from `ROTATIONAL_CORE`)
+
+LLM proposals missing any of items 2–4 are backfilled from these same pools by `main._ensure_required_content()`.
+
+## Consistency & Re-entry (`src/consistency.py`)
+
+Adherence is read from the tracker — Garmin `strength_training` activities in `GARMIN_DB_PATH` plus the dates the athlete logged feedback — never from what was emailed. Rides in the last 7 days are counted separately, so "still riding, not lifting" shows as fit-but-detrained. No env vars of its own.
+
+| Knob | Default | Effect |
+|------|---------|--------|
+| `RUSTY_DAYS` | `10` | 10–20 days since the last completed session → `rusty` (ramp-back rules). |
+| `OFF_WAGON_DAYS` | `21` | 21+ days off, or nothing on record → `off_wagon` (full re-entry rules). |
+| `HABIT_SESSIONS_28D` | `3` | ≤ this many completed sessions in 28 days → `rusty`, even after a recent one-off session. |
+| `llm.SESSION_MINUTES` | `{"off_wagon": 35, "rusty": 45}` | Session target in the prompt for each mode; anything else uses `profile.ATHLETE["session_minutes"]` (55). |
+
+Effects of a non-`on_track` mode: the prompt gains a CONSISTENCY block with RE-ENTRY or RAMP-BACK rules, the template fallback runs with `reentry=True` (2 main lifts, one set fewer, RPE capped at 7, "go light" loads, a `PLAY` item), the deload is suppressed, and the email gains an amber comeback banner from `consistency.headline()`.
 
 ## Garmin Training Load, Pattern Analysis & Recovery (`src/garmin.py`)
 

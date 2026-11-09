@@ -44,6 +44,7 @@ coach_claude/
 ├── src/
 │   ├── main.py             # Orchestrator entrypoint
 │   ├── llm.py              # LLM providers (Nemotron, DeepSeek)
+│   ├── consistency.py      # Layoff detection: adherence modes + re-entry rules
 │   ├── exclusions.py       # Hard shoulder safety guardrail
 │   ├── templates.py        # Safe fallback workouts
 │   ├── history.py          # Persistent session log
@@ -74,9 +75,11 @@ coach_claude/
 
 4. **Training Load & Recovery Awareness**: Garmin activity data (last 7 days) plus wearable recovery data (sleep, stress, body battery, HRV) inform workout intensity — hard Sunday ride or a rough night's sleep softens Monday leg day.
 
-5. **Mandatory Structure**: Every session includes shoulder rehab block, rotating hip bridge variant (SL → weighted → BW), and dedicated lower-core movement.
+5. **Mandatory Structure**: Every session includes a shoulder rehab block, a loaded compound lead-off in Main, a rotating hip bridge variant (SL → weighted → BW), and two distinct core patterns — lower-core/anti-extension in Main plus anti-rotation/anti-lateral-flexion in the finisher block.
 
-6. **Deload Protocol**: Every 5th session (configurable) reduces volume while maintaining movement patterns.
+6. **Consistency & Re-entry**: `consistency.py` scores adherence from Garmin strength activities plus logged feedback (`on_track` / `rusty` / `off_wagon`). After a layoff the session becomes a comeback: shorter (45 or 35 min), RPE-capped, fewer main lifts, one play element, an amber banner on the email, and no deload stacked on top.
+
+7. **Deload Protocol**: Every 5th session (configurable) reduces volume while maintaining movement patterns. Suppressed while in re-entry.
 
 ## Support
 

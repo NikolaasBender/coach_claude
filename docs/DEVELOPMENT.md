@@ -109,12 +109,14 @@ docker compose up -d --build
 
 ### 1. Choose Pool
 Edit `src/templates.py`:
-- `REHAB_BLOCK` — shoulder rehab
-- `LOWER_POWER` — lower body power
-- `UPPER_PULL` — upper pulling
-- `HIP_BRIDGES` — hip bridge variants (3 only, cycle)
-- `LOWER_CORE` — lower-core emphasis
-- `FINISHERS` — general finishers
+- `REHAB_BLOCK` — shoulder rehab; opens every session
+- `LOWER_POWER` — lower body power; Main block on Monday (compound lead-off drawn from here)
+- `UPPER_PULL` — upper pulling; Main block on Friday (compound lead-off drawn from here)
+- `HIP_BRIDGES` — hip bridge variants (3 only, cycle); Main block, one every session
+- `LOWER_CORE` — lower-core / anti-extension; Main block, one every session
+- `ROTATIONAL_CORE` — anti-rotation / anti-lateral-flexion; finisher block, one every session
+- `FINISHERS` — cycling-specific finishers; finisher block on normal sessions
+- `PLAY` — comeback/fun movements; replaces the `FINISHERS` pick on re-entry sessions
 
 ### 2. Add Exercise Dict
 ```python

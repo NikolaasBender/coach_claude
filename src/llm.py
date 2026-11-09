@@ -19,6 +19,7 @@ import sys
 
 from openai import OpenAI
 
+from . import consistency as C
 from . import profile as P
 from .exclusions import PROMPT_CONSTRAINTS
 
@@ -93,12 +94,20 @@ def trend_analysis(provider, ctx, day="", deload=False):
             parts.append("CURRENT RECOVERY SNAPSHOT:\n" + garmin["recovery"])
         if ctx.get("load_summary"):
             parts.append("STRENGTH-LOAD ANALYSIS (gym sessions):\n" + ctx["load_summary"])
+        if ctx.get("consistency"):
+            parts.append(C.prompt_section(ctx["consistency"]).split("\n\n")[0])
         if ctx.get("feedback"):
             parts.append(ctx["feedback"])
         if not parts:
             return ""
         if day:
             parts.append(f"TODAY'S SESSION: {day}, deload={bool(deload)}")
+        mode = (ctx.get("consistency") or {}).get("mode", "on_track")
+        if mode != "on_track":
+            parts.append(
+                "NOTE: this is a comeback session after time off. Keep the read "
+                "encouraging and forward-looking — no guilt about the gap."
+            )
 
         client = OpenAI(base_url=provider["base_url"],
                         api_key=os.environ[provider["key_env"]])
@@ -120,8 +129,12 @@ def trend_analysis(provider, ctx, day="", deload=False):
         return ""
 
 
+# Session length by consistency mode — a comeback session is deliberately short.
+SESSION_MINUTES = {"off_wagon": 35, "rusty": 45}
+
+
 def _build_user_prompt(day, deload, history, garmin=None, load_summary="",
-                       feedback="", hip_bridge=None):
+                       feedback="", hip_bridge=None, consistency=None):
     equip = "\n".join(f"- {e}" for e in P.EQUIPMENT)
     equip += f"\n\nNOTE: {P.EQUIPMENT_NOTES}"
     hist = json.dumps(history, indent=2) if history else "none yet (first session)"
@@ -157,13 +170,20 @@ technique, mobility, and core; fully recovered -> allow planned progression.
             "\nMANDATORY THIS SESSION — include EXACTLY this hip bridge variant in "
             f"the Main block (do not substitute): \"{hip_bridge['name']}\" "
             f"({hip_bridge.get('reps','')}, {hip_bridge.get('load','')}). "
-            "It rotates single-leg -> weighted -> unweighted across sessions.\n"
+            "It rotates single-leg -> weighted -> unweighted across sessions. "
+            "On a comeback session use the easiest honest version of it.\n"
         )
+
+    mode = (consistency or {}).get("mode", "on_track")
+    minutes = SESSION_MINUTES.get(mode, P.ATHLETE["session_minutes"])
+    consistency_section = (
+        f"\n{C.prompt_section(consistency)}\n" if consistency else ""
+    )
 
     return f"""Design the {day.upper()} session.
 
 ATHLETE: {P.ATHLETE['experience']}, {P.ATHLETE['training_role']}.
-Sport: {P.ATHLETE['discipline']}. Session target: {P.ATHLETE['session_minutes']} min.
+Sport: {P.ATHLETE['discipline']}. Session target: {minutes} min.
 Primary focus for {day}: {P.SCHEDULE.get(day.lower(), 'general strength')}.
 
 {PROMPT_CONSTRAINTS}
@@ -172,11 +192,24 @@ EQUIPMENT AVAILABLE (use only these):
 {equip}
 
 DELOAD THIS SESSION: {deload}. If true, cut volume/intensity ~40%.
-{garmin_section}{recovery_section}{load_section}{feedback_section}{bridge_line}
+{consistency_section}{garmin_section}{recovery_section}{load_section}{feedback_section}{bridge_line}
 REQUIRED CONTENT EVERY SESSION:
-- The mandatory hip bridge variant named above (in Main).
-- At least one dedicated LOWER-CORE movement (e.g. lying/hanging leg raise,
-  dead bug, reverse crunch). Prefer lower-ab/anti-extension work over generic planks.
+- LEAD the Main block with a genuinely loaded COMPOUND lift (barbell or heavy
+  KB/DB): squat, deadlift/RDL, loaded lunge or step-up, heavy KB swing on
+  lower days; chin-up, barbell/KB/DB row, or neutral-grip floor/landmine press
+  on upper days. Bodyweight plyos, band work, and TRX patterning do NOT count
+  as the compound — they can follow it. Progress its load week to week.
+- The mandatory hip bridge variant named above (in Main). When the rotation
+  calls for the unweighted variant, still make it demanding (single-leg,
+  paused, or elevated) — the athlete finds flat bodyweight bridges too easy.
+- TWO DISTINCT CORE PATTERNS, not one:
+  1. a LOWER-CORE / anti-extension movement in Main (lying or hanging leg
+     raise, reverse crunch, dead bug, stability-ball rollout, hollow hold) —
+     prefer these over generic front planks; and
+  2. an ANTI-ROTATION / ANTI-LATERAL-FLEXION movement in the Cycling finisher
+     block (Pallof press or hold, suitcase carry, side plank variant,
+     half-kneeling band chop, bird dog).
+  The hip bridge does not satisfy either one.
 - Deliberately vary exercises week to week; rotate away from what was used most
   in the recent block. Nudge load/reps up where the athlete handled it well.
 - In coach_notes, briefly ACKNOWLEDGE the recent training block and feedback
@@ -205,18 +238,20 @@ def _extract_json(text: str):
 
 
 def generate(provider, day, deload, history, garmin=None, load_summary="",
-             feedback="", hip_bridge=None, extra_note=None):
+             feedback="", hip_bridge=None, consistency=None, extra_note=None):
     """Call one provider's LLM and return a parsed workout dict.
 
     Raises on failure so the caller can retry or fall back to templates.
-    `provider` is one of the PROVIDERS dicts.
+    `provider` is one of the PROVIDERS dicts. `consistency` is a
+    consistency.assess() dict — it decides session length and whether this is a
+    comeback session.
     """
     api_key = os.environ[provider["key_env"]]
     client = OpenAI(base_url=provider["base_url"], api_key=api_key)
 
     user = _build_user_prompt(
-        day, deload, history, garmin=garmin,
-        load_summary=load_summary, feedback=feedback, hip_bridge=hip_bridge,
+        day, deload, history, garmin=garmin, load_summary=load_summary,
+        feedback=feedback, hip_bridge=hip_bridge, consistency=consistency,
     )
     if extra_note:
         # Used on retry to tell the model which exercises it must replace.

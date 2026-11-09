@@ -5,9 +5,10 @@ Flow:
   2. Decide deload (every 5th session since last deload).
   3. Gather context: recent history, multi-week load analysis, Garmin load,
      recent athlete feedback, and the rotating mandatory hip-bridge variant.
-  4. Ask EVERY configured model (Nemotron + DeepSeek) for a session. Each is
-     validated against the shoulder guardrail with one corrective retry, then
-     falls back to a hand-vetted template if still unsafe.
+  4. Ask EVERY configured model for a session. Each is validated against the
+     shoulder guardrail with one corrective retry, backfilled for the required
+     content (compound lead-off, hip bridge, two core patterns), then falls
+     back to a hand-vetted template if still unsafe.
   5. Email all surviving proposals side by side and append the session to history.
 
 Safe by construction: anything a model proposes is rejected if it trips the
@@ -23,7 +24,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # cron in a container does NOT inherit env — load .env explicitly
 
-from . import feedback, garmin, history, llm, templates
+from . import consistency, feedback, garmin, history, llm, templates
 from .email_send import send
 from .exclusions import validate_workout
 
@@ -61,14 +62,57 @@ def _ensure_hip_bridge(workout, bridge):
     workout.setdefault("blocks", []).append({"name": "Main", "exercises": [ex]})
 
 
+def _find_block(workout, name):
+    """Return the named block, creating it if the model omitted it."""
+    for block in workout.get("blocks", []):
+        if block.get("name", "").strip().lower() == name.strip().lower():
+            block.setdefault("exercises", [])
+            return block
+    block = {"name": name, "exercises": []}
+    workout.setdefault("blocks", []).append(block)
+    return block
+
+
+def _ensure_required_content(workout, day, seed):
+    """Backfill the non-negotiable session content the prompt asks for.
+
+    Athlete feedback is explicit: sessions ran core-light and wanted real
+    loaded lifts, so a proposal missing a compound lead-off or either core
+    pattern gets one spliced in from the vetted pools rather than shipping
+    short. Everything added here is pre-cleared by exclusions.py.
+    """
+    names = [
+        ex.get("name", "")
+        for block in workout.get("blocks", [])
+        for ex in block.get("exercises", [])
+    ]
+    main = _find_block(workout, "Main")
+
+    if not any(templates.is_compound(n) for n in names):
+        lift = templates.pick_compound(day, seed)
+        print(f"[content] no loaded compound proposed -> leading with {lift['name']}", file=sys.stderr)
+        main["exercises"].insert(0, lift)
+
+    if not any(templates.is_lower_core(n) for n in names):
+        core = templates.pick_lower_core(seed)
+        print(f"[content] no lower-core movement -> adding {core['name']}", file=sys.stderr)
+        main["exercises"].append(core)
+
+    if not any(templates.is_rotational_core(n) for n in names):
+        core = templates.pick_rotational_core(seed)
+        print(f"[content] no anti-rotation core -> adding {core['name']}", file=sys.stderr)
+        _find_block(workout, "Cycling finisher")["exercises"].append(core)
+
+
 def build_variant(provider, day, deload, ctx):
     """One provider's proposal: LLM with validation + one retry, else template."""
     label = provider["label"]
+    seed = f"{label}-{day}-{datetime.now().date().isoformat()}"
     try:
         workout = llm.generate(
             provider, day, deload, ctx["recent"], garmin=ctx["garmin"],
             load_summary=ctx["load_summary"], feedback=ctx["feedback"],
-            hip_bridge=ctx["bridge"],
+            hip_bridge=ctx["bridge"], consistency=ctx["consistency"],
         )
         ok, violations = validate_workout(workout)
         if not ok:
@@ -77,27 +121,37 @@ def build_variant(provider, day, deload, ctx):
             workout = llm.generate(
                 provider, day, deload, ctx["recent"], garmin=ctx["garmin"],
                 load_summary=ctx["load_summary"], feedback=ctx["feedback"],
-                hip_bridge=ctx["bridge"], extra_note=fix,
+                hip_bridge=ctx["bridge"], consistency=ctx["consistency"],
+                extra_note=fix,
             )
             ok, violations = validate_workout(workout)
         if ok:
             _ensure_hip_bridge(workout, ctx["bridge"])
+            _ensure_required_content(workout, day, seed)
             return workout
         print(f"[guardrail:{label}] retry still unsafe: {violations} -> template", file=sys.stderr)
     except Exception as e:
         print(f"[llm:{label}] failed ({e}) -> template", file=sys.stderr)
 
     # Fallback: a safe template, tagged with this provider's label.
-    seed = f"{label}-{day}-{datetime.now().date().isoformat()}"
-    workout = templates.generate(day, deload, seed, session_index=ctx["session_index"])
+    workout = templates.generate(
+        day, deload, seed, session_index=ctx["session_index"],
+        reentry=ctx["consistency"]["mode"] != "on_track",
+    )
     workout["model"] = f"{label} (fallback: template)"
     return workout
 
 
 def main():
     day = target_day()
-    deload = history.weeks_since_deload() >= (DELOAD_EVERY - 1)
     session_index = history.count()
+
+    # Tracker truth first: it decides whether this is a normal session or a
+    # comeback, and a comeback is already light — stacking a deload on top of
+    # one is pointless.
+    state = consistency.assess()
+    reentry = state["mode"] != "on_track"
+    deload = history.weeks_since_deload() >= (DELOAD_EVERY - 1) and not reentry
 
     garmin_ctx = garmin.load_context()
     pattern_analysis = garmin_ctx.get("pattern_analysis", "")
@@ -112,14 +166,18 @@ def main():
         "garmin": garmin_ctx,
         "bridge": templates.hip_bridge(session_index),
         "session_index": session_index,
+        "consistency": state,
     }
+    print(f"[consistency] mode={state['mode']} days_since={state['days_since']} "
+          f"strength_28d={state['strength_28d']}", file=sys.stderr)
 
     providers = llm.active_providers()
     trend = llm.trend_analysis(providers[0], ctx, day=day, deload=deload) if providers else ""
     if not providers:
         print("[warn] no LLM providers configured — using template only", file=sys.stderr)
         seed = f"template-{day}-{datetime.now().date().isoformat()}"
-        w = templates.generate(day, deload, seed, session_index=session_index)
+        w = templates.generate(day, deload, seed, session_index=session_index,
+                               reentry=reentry)
         variants = [{"model": "Template", "workout": w}]
     else:
         variants = []
@@ -144,6 +202,7 @@ def main():
         "pattern_weeks": pattern_weeks,
         "pattern_trend": pattern_trend,
         "trend_analysis": trend,
+        "consistency": state,
     }
 
     send(session)

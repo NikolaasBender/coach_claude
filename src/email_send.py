@@ -14,6 +14,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+from . import consistency
 from .exercise_links import get_url
 
 
@@ -139,6 +140,7 @@ def _pattern_graph(weeks: list, trend: str) -> str:
 def render_html(session: dict) -> str:
     day = session.get("day", "").title()
     deload = " · DELOAD WEEK" if session.get("deload") else ""
+    comeback = consistency.headline(session.get("consistency") or {"mode": "on_track"})
     variants = _variants(session)
     web_url = os.environ.get("WEB_URL", "").rstrip("/")
     pattern_analysis = session.get("pattern_analysis", "").strip()
@@ -182,6 +184,13 @@ def render_html(session: dict) -> str:
             </p>
           </div>"""
 
+    comeback_section = ""
+    if comeback:
+        comeback_section = f"""
+      <div style="margin-bottom:18px;padding:14px 16px;background:#fff6e5;border-left:4px solid #e8a33d;border-radius:4px;font-size:15px;line-height:1.55;">
+        <strong>{html.escape(comeback)}</strong>
+      </div>"""
+
     trend_section = ""
     if trend:
         escaped_trend = html.escape(trend).replace("\n", "<br>")
@@ -199,7 +208,7 @@ def render_html(session: dict) -> str:
 
     return f"""<html><body style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:760px;margin:0 auto;color:#222;">
       <h2 style="margin-bottom:0;">{day} Strength{deload}</h2>
-      {trend_section}{recovery_section}{pattern_section}
+      {comeback_section}{trend_section}{recovery_section}{pattern_section}
       {compare_hint}
       {sections}
       {feedback_cta}

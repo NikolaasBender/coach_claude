@@ -98,6 +98,7 @@ coach_claude/
 ├── src/
 │   ├── main.py           # Orchestrator entrypoint
 │   ├── llm.py            # LLM provider (Nemotron)
+│   ├── consistency.py    # Layoff detection + re-entry/ramp-back rules
 │   ├── exclusions.py     # Hard shoulder safety guardrail
 │   ├── templates.py      # Safe fallback workouts
 │   ├── history.py        # Persistent session log

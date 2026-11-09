@@ -7,24 +7,36 @@ Determines target day from: CLI arg (`monday`/`friday`), `FORCE_DAY` env, or sys
 
 ### `build_variant(provider, day, deload, ctx) -> dict`
 Generates one provider's proposal:
-1. Calls `llm.generate()` with full context
+1. Calls `llm.generate()` with full context (including `consistency=ctx["consistency"]`)
 2. Validates via `exclusions.validate_workout()`
 3. One retry on failure (asks LLM to swap bad exercises)
-4. Falls back to `templates.generate()` if still unsafe
-4. Ensures mandatory hip bridge present via `_ensure_hip_bridge()`
+4. Ensures mandatory hip bridge present via `_ensure_hip_bridge()`, then backfills required content via `_ensure_required_content()`
+5. Falls back to `templates.generate(..., reentry=ctx["consistency"]["mode"] != "on_track")` if still unsafe
 
 Returns workout dict with `model`, `workout`, `focus`, `coach_notes`.
+
+### `_find_block(workout, name) -> dict`
+Returns the named block from `workout["blocks"]` (case-insensitive), creating and appending it with an empty `exercises` list if the model omitted it.
+
+### `_ensure_required_content(workout, day, seed) -> None`
+Backfills the non-negotiable content the prompt asks for, so a thin proposal never ships short. Runs after `_ensure_hip_bridge()`. Using `templates.is_compound` / `is_lower_core` / `is_rotational_core` over every exercise name in the workout:
+- no loaded compound → `templates.pick_compound(day, seed)` inserted at the front of the `Main` block
+- no lower-core movement → `templates.pick_lower_core(seed)` appended to `Main`
+- no anti-rotation movement → `templates.pick_rotational_core(seed)` appended to `Cycling finisher`
+
+Each backfill logs a `[content]` line to stderr. Everything added comes from the pre-vetted template pools, so the guardrail invariant holds.
 
 ### `main() -> None`
 Full orchestration:
 1. `day = target_day()`
-2. `deload = (history.weeks_since_deload() >= DELOAD_EVERY)`
-3. `garmin_ctx = garmin.load_context()` → includes `pattern_analysis`, `pattern_weeks`/`pattern_trend`, `recovery`
-4. `ctx = { recent, load_summary, feedback, garmin, bridge, session_index }`
-5. `trend = llm.trend_analysis(providers[0], ctx, day, deload)` — LLM trend read (best-effort, "" on failure)
-6. Call Nemotron via `build_variant()` (single provider)
-7. `email_send.send(session)` with `trend_analysis` + `recovery` + pattern volume graph at top
-8. `history.append(session)`
+2. `state = consistency.assess()`; `reentry = state["mode"] != "on_track"`
+3. `deload = history.weeks_since_deload() >= (DELOAD_EVERY - 1) and not reentry` — a comeback is already light
+4. `garmin_ctx = garmin.load_context()` → includes `pattern_analysis`, `pattern_weeks`/`pattern_trend`, `recovery`
+5. `ctx = { recent, load_summary, feedback, garmin, bridge, session_index, consistency }`
+6. `trend = llm.trend_analysis(providers[0], ctx, day, deload)` — LLM trend read (best-effort, "" on failure)
+7. Call Nemotron via `build_variant()` (single provider); with no providers configured, `templates.generate(..., reentry=reentry)` only
+8. `email_send.send(session)` with `consistency` banner + `trend_analysis` + `recovery` + pattern volume graph at top
+9. `history.append(session)` — the session dict carries `"consistency": state`
 
 ### `PROVIDERS: list[dict]`
 Registry of provider configs. Each:
@@ -51,22 +63,27 @@ Writes the short "coach's trend read" narrative that opens the email:
 
 Best-effort: returns `""` on any failure or when no context exists, so the email always sends.
 
-### `_build_user_prompt(day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None) -> str`
+### `SESSION_MINUTES: dict[str, int]`
+Session length by consistency mode: `{"off_wagon": 35, "rusty": 45}`. Any other mode falls back to `profile.ATHLETE["session_minutes"]` (55).
+
+### `_build_user_prompt(day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None, consistency=None) -> str`
 Builds the full user prompt injected into every LLM call. Includes:
 - Athlete profile + shoulder constraints
 - Equipment list
-- Day focus
+- Day focus and session target in minutes (from `SESSION_MINUTES` for the consistency mode)
+- CONSISTENCY block from `consistency.prompt_section()` — omitted when no state is passed
 - Multi-week load summary
 - Garmin 7-day training load summary + yesterday detail
 - Current recovery state (sleep, stress, body battery, HRV) — omitted when empty
 - Recent athlete feedback
 - Mandatory hip bridge variant for today
 - `PROMPT_CONSTRAINTS` from exclusions
+- **REQUIRED CONTENT EVERY SESSION**: a genuinely loaded compound lift leading the Main block (bodyweight plyos, band and TRX work do not count); the mandated hip bridge, made demanding when the rotation calls for the unweighted variant; TWO distinct core patterns — a lower-core / anti-extension movement in Main *and* an anti-rotation / anti-lateral-flexion movement in the Cycling finisher (the hip bridge satisfies neither); deliberate week-to-week variety; coach_notes acknowledging the recent block and feedback
 
-### `generate(provider, day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None, extra_note=None) -> dict`
+### `generate(provider, day, deload, history, garmin=None, load_summary="", feedback="", hip_bridge=None, consistency=None, extra_note=None) -> dict`
 Calls one provider's OpenAI-compatible endpoint:
 1. Creates `OpenAI` client with provider's `base_url` + API key
-2. Sends `SYSTEM` + user prompt
+2. Sends `SYSTEM` + user prompt (built with the same context, including `consistency`)
 3. Extracts JSON from response via `_extract_json()`
 4. Returns parsed workout dict
 
@@ -109,24 +126,77 @@ Upper pulling pool.
 Rotating mandatory hip bridges (3 variants, cycle SL → weighted → BW).
 
 ### `LOWER_CORE: list[dict]`
-Lower-core emphasis pool.
+Lower-core / anti-extension pool (leg raises, hanging knee and straight-leg raises, dead bug, reverse crunch, stability-ball knee tuck and rollout, hollow-body hold, heel taps).
+
+### `ROTATIONAL_CORE: list[dict]`
+Anti-rotation / anti-lateral-flexion pool (Pallof press and hold, suitcase carry, side plank and side plank with top-leg raise, half-kneeling band chop, bird dog). One of these rides in the finisher block every session — the second core pattern, not a substitute for `LOWER_CORE`.
 
 ### `FINISHERS: list[dict]`
-General core / cycling finishers pool.
+Cycling-specific finishers (single-leg RDL, BOSU balance reach, KB swing intervals, farmer carry).
+
+### `PLAY: list[dict]`
+Comeback/fun movements (KB flow complex, low box jump ladder, farmer carry medley, BOSU balance challenge, TRX row + goblet squat EMOM, KB swing EMOM). Used instead of `FINISHERS` on re-entry sessions.
+
+### `is_compound(name: str) -> bool`
+True for a loaded multi-joint lift (squat, deadlift/RDL, row, chin-up, lunge, step-up, swing, floor/landmine/overhead press, clean). Band, TRX, scapular, balance/BOSU, single-leg RDL and jump/hop names are excluded, so stability work never counts as the session's real lift.
+
+### `is_lower_core(name: str) -> bool`
+True for lower-ab / anti-extension work (leg raise, dead bug, reverse crunch, knee raise/tuck, heel tap, toe touch, rollout, hollow, V-up, sit-up, crunch).
+
+### `is_rotational_core(name: str) -> bool`
+True for anti-rotation / anti-lateral-flexion work (Pallof, anti-rotation/anti-lateral, suitcase, side plank, chop, bird dog, windmill, oblique).
+
+### `pick_compound(day: str, seed: str) -> dict`
+A vetted loaded compound from `LOWER_POWER` (monday) or `UPPER_PULL` (otherwise), chosen deterministically from `seed`.
+
+### `pick_lower_core(seed: str) -> dict`
+Deterministic pick from `LOWER_CORE`.
+
+### `pick_rotational_core(seed: str) -> dict`
+Deterministic pick from `ROTATIONAL_CORE`.
 
 ### `hip_bridge(session_index: int) -> dict`
 Returns mandatory hip bridge variant for this session index (cycles every 3).
 
-### `generate(day: str, deload: bool, seed: str, session_index: int = 0) -> dict`
+### `generate(day: str, deload: bool, seed: str, session_index: int = 0, reentry: bool = False) -> dict`
 Builds a complete safe workout:
 - Seeded RNG from `seed` (date string) for reproducibility
-- `day` = "monday" or "friday" → picks focus
-- `deload` = reduces volume (fewer sets/exercises)
-- Guarantees: rehab block, hip bridge, lower-core movement
+- `day` = "monday" or "friday" → picks focus and main pool
+- Main block = 3 exercises (2 when `reentry`), always led by a loaded compound via `_pick_main()`, then the rotating hip bridge and a `LOWER_CORE` movement
+- Finisher block = one `ROTATIONAL_CORE` movement plus one `FINISHERS` item (one `PLAY` item when `reentry`)
+- `deload` = prefixes "DELOAD:" on main-block notes and drops RPE by 2 (floor 5)
+- `reentry` = one set fewer (floor 2), RPE capped at 7, loads annotated "(go light — first sessions back)", and comeback coach_notes
+- Guarantees: rehab block, compound lead-off, hip bridge, lower-core movement, anti-rotation movement
 - Returns workout dict with `blocks`, `focus`, `coach_notes`
 
 ### `SCHEDULE_FOCUS(is_lower: bool) -> str`
 Returns focus string for day type.
+
+---
+
+## `src/consistency.py` — Adherence & Re-entry Detection
+
+Truth source is the tracker, not what was emailed: Garmin `strength_training` activities stored in `data/garmin.db` (path from `GARMIN_DB_PATH`) plus the dates the athlete left feedback on. Riding is read separately, so "still riding but not lifting" reads as fit-but-detrained. No new env vars.
+
+### `RUSTY_DAYS: int = 10` / `OFF_WAGON_DAYS: int = 21` / `HABIT_SESSIONS_28D: int = 3`
+Layoff thresholds. `HABIT_SESSIONS_28D` is the number of completed sessions in 28 days at or below which the habit is not back yet (the program is 2×/week, ~8 per 28 days).
+
+### `assess(now=None) -> dict`
+Returns `{"mode", "last_strength", "days_since", "strength_28d", "ride_count_7d", "ride_hours_7d"}`.
+
+Mode rules:
+- `off_wagon` — nothing on record, or `days_since >= OFF_WAGON_DAYS` (21+)
+- `rusty` — `days_since >= RUSTY_DAYS` (10–20), or `strength_28d <= HABIT_SESSIONS_28D`
+- `on_track` — otherwise
+
+### `prompt_section(state) -> str`
+The CONSISTENCY block injected into the LLM prompt: gap phrase, 28-day completed-session count, riding phrase, then `REENTRY_RULES` (off_wagon), `RAMP_RULES` (rusty), or a one-line "program normally" note.
+
+### `REENTRY_RULES: str` / `RAMP_RULES: str`
+Prompt text for the two comeback shapes. Re-entry: 30–40 min, 4–6 working movements, every RPE capped at 7, ~60% volume, one deliberate play element, welcoming coach_notes. Ramp-back: RPE capped at 8, ~75% volume, one playful element, gap acknowledged in one clause.
+
+### `headline(state) -> str`
+One-line amber banner for the top of the email; `""` when on track. Tolerates a partial or legacy state dict.
 
 ---
 
@@ -447,7 +517,8 @@ Interactive CLI:
   "pattern_weeks": [{"label": "15-21d", "range": "1–7 Jan", "count": 4, "hours": 8.5, "km": 250, "elev": 3200, "effort_counts": {"easy": 1, "moderate": 2, "hard": 1, "very hard": 0}, "effort_hours": {"easy": 1.5, "moderate": 4.0, "hard": 3.0, "very hard": 0.0}, "days": "Mon:1, Sat:1, Sun:1, Wed:1", "delta": " (+1.2h ↑)"}],
   "pattern_trend": "→ Trend: Volume stable (+0.3h over 3 weeks)\n→ Weekend: 9.1h vs Weekday: 7.2h",
   "recovery": "  Sleep last night: 7.4h, score 82 GOOD — 7-day avg 7.1h, score 78\n  Stress (Tue 14 Jan): avg 28/100, max 71 — 7-day avg 31\n  ...",
-  "trend_analysis": "- Volume stable around 8h/week with weekend-loaded rides\n- Recovery solid: sleep and HRV at baseline\nToday: keep planned intensity, progress hip thrust load."
+  "trend_analysis": "- Volume stable around 8h/week with weekend-loaded rides\n- Recovery solid: sleep and HRV at baseline\nToday: keep planned intensity, progress hip thrust load.",
+  "consistency": {"mode": "rusty", "last_strength": "2025-01-02", "days_since": 13, "strength_28d": 2, "ride_count_7d": 4, "ride_hours_7d": 7.8}
 }
 ```
 
@@ -492,6 +563,8 @@ Interactive CLI:
 
 ### `src/main.py`
 - `_ensure_hip_bridge(workout, bridge)` — inserts mandatory hip bridge if missing
+- `_find_block(workout, name)` — fetches or creates a named block
+- `_ensure_required_content(workout, day, seed)` — backfills compound lead-off, lower-core and anti-rotation movements from the vetted pools
 
 ### `src/web.py`
 - `_session_models(entry)` — extracts model labels from entry
@@ -504,3 +577,4 @@ Interactive CLI:
 
 ### `src/templates.py`
 - `_pick(pool, n, rng)` — samples `n` unique exercises from pool
+- `_pick_main(pool, n, rng)` — `n` main-block exercises, always led by a loaded compound

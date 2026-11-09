@@ -45,7 +45,7 @@ exclusions.validate_workout(workout)
                 └── FAIL ──▶ Fallback to templates.generate() (pre-vetted, always safe)
 ```
 
-**Key invariant**: `templates.py` exercises are hand-picked and pre-vetted against the same exclusion list. The fallback path is guaranteed safe.
+**Key invariant**: `templates.py` exercises are hand-picked and pre-vetted against the same exclusion list. The fallback path is guaranteed safe — and so is the backfill path: `main._ensure_required_content()` only splices in movements drawn from those same pre-vetted pools, so a patched LLM proposal cannot introduce an unvetted exercise.
 
 ## Prompt Constraints (`PROMPT_CONSTRAINTS`)
 
@@ -73,7 +73,7 @@ HARD SHOULDER RULES (left shoulder, anterior labrum repair, recurrent dislocatio
 | **Vertical pull** | Chin-up (controlled, neutral/supinated), pull-up (controlled) | No kipping, no wide grip |
 | **Horizontal pull** | TRX row, single-arm KB/DB row, barbell row, chest-supported row | Scapular control emphasis |
 | **Lower body** | Squat variations, deadlift variations, KB swing, box jump, lunge/step-up, glute bridge | Posterior chain priority |
-| **Core** | Dead bug, plank/RKC/side plank, leg raises, reverse crunch, Pallof press, suitcase carry, farmer carry | **Lower-core every session** |
+| **Core** | Dead bug, leg raises, reverse crunch, rollouts, hollow hold, Pallof press, half-kneeling chop, side plank, suitcase/farmer carry, bird dog | **Two patterns every session**: lower-core/anti-extension in Main, anti-rotation/anti-lateral-flexion in the finisher |
 | **Hip bridge** | Single-leg glute bridge, weighted glute bridge (floor), bodyweight glute bridge | **Rotating mandatory every session** |
 
 ## Equipment Constraints (`src/profile.py`)
@@ -90,18 +90,24 @@ Available: barbell, kettlebells (45lb, 70lb), dumbbells, BOSU, stability ball, p
 Every workout (LLM or template) **guarantees**:
 
 1. **Shoulder rehab block** (band ER, scapular control, TRX/row patterning)
-2. **Rotating hip bridge variant**:
+2. **Loaded compound lead-off** in the Main block (squat/deadlift/RDL/loaded lunge or step-up on lower days; chin-up, row, or neutral-grip floor/landmine press on upper days) — band, TRX and bodyweight plyo work follows it, never replaces it
+3. **Rotating hip bridge variant**:
    - Session 0: Single-leg glute bridge
    - Session 1: Weighted glute bridge (barbell/KB on hips, floor)
    - Session 2: Bodyweight glute bridge (paused)
    - Session 3: repeats cycle...
-3. **Dedicated lower-core movement** (leg raises, dead bugs, reverse crunch, etc.)
+4. **Two distinct core patterns**: a lower-core / anti-extension movement in Main (leg raises, dead bugs, reverse crunch, rollouts, hollow hold) **and** an anti-rotation / anti-lateral-flexion movement in the finisher block (Pallof press/hold, suitcase carry, side plank, band chop, bird dog). The hip bridge satisfies neither.
 
 ## Deload Protocol
 
 - Every 5th session (configurable via `DELOAD_EVERY`)
 - Reduces volume/intensity while maintaining movement patterns
-- Still includes mandatory rehab + hip bridge + lower-core
+- Still includes mandatory rehab + compound lead-off + hip bridge + both core patterns
+- Suppressed during re-entry — a comeback session is already light
+
+## Re-entry Sessions
+
+When `consistency.py` detects a layoff (`rusty` or `off_wagon`), the session becomes a comeback: fewer main lifts, one set fewer, and **every RPE capped at 7** in the template path (the prompt caps re-entry at RPE 7, ramp-back at RPE 8). Loads are annotated "go light". The structure above still holds — the rehab block, compound lead-off, hip bridge and both core patterns are all still present, just lighter.
 
 ## PT Review Checklist
 
@@ -110,7 +116,7 @@ Every workout (LLM or template) **guarantees**:
 - [ ] Exclusion list covers your specific contraindications
 - [ ] Allowed overhead progression matches your clearance
 - [ ] Hip bridge rotation appropriate for your glute/hamstring capacity
-- [ ] Lower-core selection doesn't irritate your lumbar spine
+- [ ] Core selection (lower-core and anti-rotation) doesn't irritate your lumbar spine
 - [ ] Session volume (~55 min) matches your recovery capacity
 - [ ] Email feedback loop works for you to flag issues quickly
 
