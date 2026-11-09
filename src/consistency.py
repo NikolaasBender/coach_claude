@@ -189,7 +189,12 @@ def prompt_section(state):
     if state["mode"] == "off_wagon":
         return head + "\nTHE ATHLETE IS COMING BACK AFTER A LAYOFF.\n" + REENTRY_RULES
     if state["mode"] == "rusty":
-        return head + "\nTHE ATHLETE HAS BEEN OFF FOR A COUPLE OF WEEKS.\n" + RAMP_RULES
+        if (state.get("days_since") or 0) >= RUSTY_DAYS:
+            why = "THE ATHLETE HAS BEEN OFF FOR A COUPLE OF WEEKS."
+        else:
+            why = ("THE ATHLETE LIFTED RECENTLY BUT ONLY SPORADICALLY — the habit "
+                   "isn't back yet, so keep sessions inviting rather than hard.")
+        return head + f"\n{why}\n" + RAMP_RULES
     return head + "\nConsistency is fine — program normally and progress load."
 
 
@@ -204,5 +209,12 @@ def headline(state):
             "the only goal today is showing up."
         )
     if state.get("mode") == "rusty":
-        return f"{days} days since your last lift — ramping back in, nothing heavy today."
+        if (days or 0) >= RUSTY_DAYS:
+            return f"{days} days since your last lift — ramping back in, nothing heavy today."
+        n = state.get("strength_28d", 0)
+        plural = "" if n == 1 else "s"
+        return (
+            f"{n} lift{plural} in the last 4 weeks — still building the habit back, "
+            "so today stays inviting rather than heavy."
+        )
     return ""
